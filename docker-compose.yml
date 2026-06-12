@@ -1,0 +1,21 @@
+services:
+  app:
+    build: .
+    container_name: python-app
+    volumes:
+      - ./:/app
+      - /app/__pycache__
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+    devices:
+      - "${MESHCORE_PORT:-/dev/ttyACM0}:${MESHCORE_PORT:-/dev/ttyACM0}"
+    privileged: true
+    restart: unless-stopped
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
