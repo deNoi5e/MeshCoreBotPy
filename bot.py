@@ -39,7 +39,7 @@ async def main():
     }
 
     mc = await MeshCore.create_serial(port=port)
-    await mc.connect()
+    #await mc.connect()
     await mc.commands.set_flood_scope(None)
     mc.set_decrypt_channel_logs(True)
     logger.info("=" * 50)
@@ -90,6 +90,10 @@ async def main():
         mc.subscribe(events.EventType.RX_LOG_DATA, on_rx_log)
 
         async def process_message(payload, is_channel=False, route_data=None):
+
+            logger.info(f"  ----- payload = {payload}")
+            sender = ""
+
             weather_channel_idx = config.get("weather_broadcast", {}).get("channel_idx", 3)
             if is_channel:
                 channel_idx = payload.get('channel_idx', '?')
@@ -101,8 +105,9 @@ async def main():
                 if ':' in full_text:
                     parts = full_text.split(':', 1)
                     text = parts[1].strip()
+                    sender = parts[0].strip()
                 else:
-                    text = full_text
+                    text = full_text                    
                 source_key = f"channel_{channel_idx}"
                 source_name = f"канал {channel_idx}"
                 dest_key = f"channel_{channel_idx}"
@@ -137,12 +142,13 @@ async def main():
                 weather_api_key=weather_api_key,
                 config=config,
                 mc=mc,
+                sender=sender,
             )
 
             if response is not None:
                 response = to_lat(response)
                 try:
-                    logger.info("   📤 Отправляю ответ...")
+                    logger.info(f"   📤 Отправляю ответ... {response}")
                     if is_channel:
                         send_ts = int(time.time())
                         preview = response[:30] + ("…" if len(response) > 30 else "")

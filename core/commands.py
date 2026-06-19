@@ -79,7 +79,7 @@ COMMANDS: dict[str, Callable[..., Coroutine]] = {
 
 
 async def dispatch(text: str, *, hops: int, route_data: dict | None,
-                   weather_api_key: str, config: dict, mc: Any) -> str | None:
+                   weather_api_key: str, config: dict, mc: Any, sender: str) -> str | None:
     if not text.startswith('/'):
         return None
     parts = text.split(None, 1)
@@ -87,8 +87,16 @@ async def dispatch(text: str, *, hops: int, route_data: dict | None,
     handler = COMMANDS.get(cmd)
     if handler is None:
         return None
+    
+    logger.info(f"route_data = {route_data}")
+
     ctx = Context(
         text=text, args=args, hops=hops, route_data=route_data,
         weather_api_key=weather_api_key, config=config, mc=mc,
     )
-    return await handler(ctx)
+
+    result = await handler(ctx)
+    if not sender == "":
+        result = f"@[{sender}] {result}"
+
+    return result
