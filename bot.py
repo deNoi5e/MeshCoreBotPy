@@ -107,7 +107,7 @@ async def main():
                     text = parts[1].strip()
                     sender = parts[0].strip()
                 else:
-                    text = full_text                    
+                    text = full_text
                 source_key = f"channel_{channel_idx}"
                 source_name = f"канал {channel_idx}"
                 dest_key = f"channel_{channel_idx}"
