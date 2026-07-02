@@ -24,6 +24,38 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def str_byte_len(text: str) -> int:
+    return len(text.encode('utf-8'))
+
+
+def split_msg(msg: str, sender: str, max_len: int) -> list[str]:
+    result = []
+    words = msg.split(" ")
+    word_index = 0
+    while word_index < len(words):
+        if not sender == "":
+            part = f"@[{sender}] {words[word_index]}"
+        else:
+            part = f"{words[word_index]}"
+
+        word_index += 1
+        while word_index < len(words) and str_byte_len(part + f" {words[word_index]}") <= max_len:
+            part += f" {words[word_index]}"
+            word_index += 1
+        result.append(part)
+    return result
+
+
+def test_split():
+    msg = "😀 😀 😀 test 1 test2 test3 testttt\ntt\ntt\n"
+    result = split_msg(msg, "SenderName", 25)
+    for part in result:
+        print(f"{part}    ({str_byte_len(part)} bytes)")
+    result = split_msg(msg, "", 25)
+    for part in result:
+        print(f"{part}    ({str_byte_len(part)} bytes)")
+
+
 async def main():
     port = os.environ["MESHCORE_PORT"]
     weather_api_key = os.environ.get("OPENWEATHERMAP_API_KEY", "")
@@ -97,8 +129,8 @@ async def main():
             weather_channel_idx = config.get("weather_broadcast", {}).get("channel_idx", 3)
             if is_channel:
                 channel_idx = payload.get('channel_idx', '?')
-                if channel_idx == weather_channel_idx:
-                    return
+                #if channel_idx == weather_channel_idx:
+                #    return
                 full_text = payload.get('text', '').strip()
                 sender_timestamp = payload.get('sender_timestamp', 0)
                 path_len = payload.get('path_len', 0)
@@ -135,34 +167,38 @@ async def main():
                     logger.error(f"   ⚠️  Ошибка отправки ACK: {e}")
 
             hops = 0 if path_len == 255 else path_len
-            response = await dispatch(
+            response_all = await dispatch(
                 text,
                 hops=hops,
                 route_data=route_data,
                 weather_api_key=weather_api_key,
                 config=config,
-                mc=mc,
-                sender=sender,
+                mc=mc
             )
 
-            if response is not None:
-                response = to_lat(response)
-                try:
-                    logger.info(f"   📤 Отправляю ответ... {response}")
-                    if is_channel:
-                        send_ts = int(time.time())
-                        preview = response[:30] + ("…" if len(response) > 30 else "")
-                        pending_bot_sends[send_ts] = preview
-                        cutoff = send_ts - 60
-                        for k in [k for k in pending_bot_sends if k < cutoff]:
-                            del pending_bot_sends[k]
-                        channel_idx = payload.get('channel_idx', 0)
-                        await mc.commands.send_chan_msg(channel_idx, response, timestamp=send_ts)
-                    else:
-                        await mc.commands.send_msg(dest_key, response)
-                    logger.info("   ✨ Ответ успешно отправлен!")
-                except Exception as e:
-                    logger.error(f"   ❌ Ошибка отправки ответа: {e}")
+            if response_all is not None:
+                response_all = to_lat(response_all)
+
+                responses = split_msg(response_all, sender, 130 if is_channel else 150)
+
+                for response in responses:
+                    try:
+                        logger.info(f"   📤 Отправляю ответ... {response}")
+                        if is_channel:
+                            send_ts = int(time.time())
+                            preview = response[:30] + ("…" if len(response) > 30 else "")
+                            pending_bot_sends[send_ts] = preview
+                            cutoff = send_ts - 60
+                            for k in [k for k in pending_bot_sends if k < cutoff]:
+                                del pending_bot_sends[k]
+                            channel_idx = payload.get('channel_idx', 0)
+                            await mc.commands.send_chan_msg(channel_idx, response, timestamp=send_ts)
+                        else:
+                            await mc.commands.send_msg(dest_key, response)
+                        logger.info("   ✨ Ответ успешно отправлен!")
+                    except Exception as e:
+                        logger.error(f"   ❌ Ошибка отправки ответа: {e}")
+                    time.sleep(2.0)
 
         while True:
             contact_event = asyncio.create_task(
@@ -185,6 +221,7 @@ async def main():
                     event = task.result()
                     if event:
                         is_channel = event.type == events.EventType.CHANNEL_MSG_RECV
+                        logger.info(f"   is_channel = {is_channel}   event.type = {event.type}")
                         sender_timestamp = event.payload.get('sender_timestamp')
                         route_data = None
                         if sender_timestamp:
@@ -218,5 +255,6 @@ async def main():
         logger.info("👋 Отключено от устройства")
 
 
+#test_split()
 if __name__ == "__main__":
     asyncio.run(main())

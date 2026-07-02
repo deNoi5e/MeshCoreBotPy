@@ -37,7 +37,7 @@ async def _ping(ctx: Context) -> str | None:
 
 
 async def _help(ctx: Context) -> str | None:
-    return "📋 Команды:\n🏓 /ping - проверка\n🌤 /weather <город> - погода\n🚗 /traffic - пробки в Омске\n❓ /help - справка"
+    return "📋 Команды:\n\t🏓 /ping - проверка\n\t🌤 /weather <город> - погода\n\t🚗 /traffic - пробки в Омске\n\t❓ /help - справка"
 
 
 async def _traffic(ctx: Context) -> str | None:
@@ -68,6 +68,8 @@ async def _weathernow(ctx: Context) -> str | None:
         return f"❌ Ошибка: {e}"
     return None
 
+async def _test(ctx: Context) -> str | None: 
+    return "Very long string to test splitting!!! Очень длинная строка чтобы проверить разбиение на несколько сообщений! УРА УРА :) 😁 😁 😁"
 
 COMMANDS: dict[str, Callable[..., Coroutine]] = {
     "/ping": _ping,
@@ -75,11 +77,12 @@ COMMANDS: dict[str, Callable[..., Coroutine]] = {
     "/weather": _weather,
     "/weathernow": _weathernow,
     "/traffic": _traffic,
+    "/test": _test,
 }
 
 
 async def dispatch(text: str, *, hops: int, route_data: dict | None,
-                   weather_api_key: str, config: dict, mc: Any, sender: str) -> str | None:
+                   weather_api_key: str, config: dict, mc: Any) -> str | None:
     if not text.startswith('/'):
         return None
     parts = text.split(None, 1)
@@ -96,7 +99,5 @@ async def dispatch(text: str, *, hops: int, route_data: dict | None,
     )
 
     result = await handler(ctx)
-    if not sender == "":
-        result = f"@[{sender}] {result}"
 
     return result
