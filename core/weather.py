@@ -54,12 +54,13 @@ async def get_weather(city: str, api_key: str) -> str:
 
     icon = _weather_icon(data["weather"][0]["id"])
     desc = data["weather"][0]["description"]
+    country = data["sys"]["country"]
     temp = round(data["main"]["temp"])
     feels = round(data["main"]["feels_like"])
     humidity = data["main"]["humidity"]
     wind = round(data["wind"]["speed"])
     feels_str = f"({feels}°)" if feels != temp else ""
-    return f"{icon} {data['name']}: {desc} {temp}°C{feels_str} 💧{humidity}% 💨{wind}м/с"
+    return f"{icon} {data['name']} ({country}): {desc} {temp}°C{feels_str} 💧{humidity}% 💨{wind}м/с"
 
 
 async def get_daily_forecast(city: str, api_key: str) -> str:
