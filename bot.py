@@ -3,6 +3,7 @@ import asyncio
 import logging
 import os
 import time
+import traceback
 from datetime import datetime
 
 from dotenv import load_dotenv
@@ -237,6 +238,7 @@ async def main():
                     pass
                 except Exception as e:
                     logger.error(f"Ошибка обработки события: {e}")
+                    traceback.print_exc()
 
     try:
         await asyncio.gather(

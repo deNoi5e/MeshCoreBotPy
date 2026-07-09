@@ -6,6 +6,7 @@ from typing import Any, Callable, Coroutine
 
 from .traffic import get_traffic_omsk
 from .weather import get_daily_forecast, get_weather, to_lat
+from .openmeteo_omsk import get_weather as openmeteo_get_weather
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,11 @@ async def _weathernow(ctx: Context) -> str | None:
         return f"❌ Ошибка: {e}"
     return None
 
+async def _weather2(ctx: Context) -> str | None:
+    result = await openmeteo_get_weather() if not ctx.args else await openmeteo_get_weather(ctx.args)
+    logger.info(f"   🌤 Погода для «{ctx.args}» получена: {result}")
+    return str(result)
+
 async def _test(ctx: Context) -> str | None: 
     return "Very long string to test splitting!!! Очень длинная строка чтобы проверить разбиение на несколько сообщений! УРА УРА :) 😁 😁 😁"
 
@@ -78,6 +84,7 @@ COMMANDS: dict[str, Callable[..., Coroutine]] = {
     "/weathernow": _weathernow,
     "/traffic": _traffic,
     "/test": _test,
+    "/weather2": _weather2,
 }
 
 

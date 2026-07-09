@@ -1,4 +1,7 @@
 @echo off
+
+taskkill /IM pythonw.exe /F
+
 d:
 cd D:\_Devices\Heltec\_Meshcore\MeshCoreBotPy\
 chcp.com 65001
