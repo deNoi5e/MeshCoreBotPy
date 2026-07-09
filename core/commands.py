@@ -38,7 +38,7 @@ async def _ping(ctx: Context) -> str | None:
 
 
 async def _help(ctx: Context) -> str | None:
-    return "📋 Команды:\n\t🏓 /ping - проверка\n\t🌤 /weather <город> - погода\n\t🚗 /traffic - пробки в Омске\n\t❓ /help - справка"
+    return "📋 Команды:\n\t🏓 /ping - проверка\n\t🌤 /weather <город> - погода\n\t🚗 /traffic - пробки в Омске\n\t❓ /help - справка\n\t🌤 /weather2 <город> - погода 2"
 
 
 async def _traffic(ctx: Context) -> str | None:
