@@ -76,6 +76,10 @@ class Weather:
     time: Optional[str] = None                 # локальное время замера
 
     def __str__(self) -> str:
+        lines = [f"{self.city} ({self.country if self.country else "UNK"}) {self.temperature:+.0f}({self.feels_like:+.0f}),{self.condition},{self.wind_dir}{self.wind_speed:.0f}км/ч,{self.humidity}%,{self.pressure_mmhg:.0f}мм.р.с."]
+        return "\n".join(lines)
+
+    def __str2__(self) -> str:
         lines = [f"{"Погода в г. " if self.lat and self.lon else ""}{self.city} ({self.country if self.country else "UNKNOWN"})"]
         if self.lat and self.lon:
             lines.append(f"  Координаты: {self.lat}, {self.lon}")
@@ -136,7 +140,7 @@ async def get_weather(
     """
     if lat is None or lon is None:
         if city.strip().lower() in ("омск", "omsk"):
-            lat, lon, city_name, country = OMSK_LAT, OMSK_LON, "Омск", "Russia"
+            lat, lon, city_name, country = OMSK_LAT, OMSK_LON, "Омск", "Россия"
         else:
             lat, lon, city_name, country = geocode_city(city, timeout)
     else:
