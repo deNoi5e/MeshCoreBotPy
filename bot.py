@@ -11,6 +11,8 @@ from meshcore import MeshCore, events
 
 from core.commands import dispatch
 from core.msgsplit import split_msg, str_byte_len
+from core.telegram_bridge import send_to_telegram, telegram_bridge
+from core.telegram_userfeed import telegram_userfeed
 from core.weather import to_lat, weather_broadcast_scheduler
 
 load_dotenv()
@@ -39,6 +41,8 @@ def test_split():
 async def main():
     port = os.environ["MESHCORE_PORT"]
     weather_api_key = os.environ.get("OPENWEATHERMAP_API_KEY", "")
+    telegram_channel_idx = os.environ.get("TELEGRAM_CHANNEL_IDX", "")
+    telegram_userfeed_channel_idx = os.environ.get("TELEGRAM_USERFEED_CHANNEL_IDX", "")
     config = {
         "openweathermap_api_key": weather_api_key,
         "weather_broadcast": {
@@ -47,6 +51,18 @@ async def main():
             "hour": int(os.environ.get("WEATHER_HOUR", "7")),
             "minute": int(os.environ.get("WEATHER_MINUTE", "30")),
             "timezone_offset_hours": int(os.environ.get("WEATHER_TIMEZONE_OFFSET", "6")),
+        },
+        "telegram_bridge": {
+            "bot_token": os.environ.get("TELEGRAM_BOT_TOKEN", ""),
+            "chat_id": os.environ.get("TELEGRAM_CHAT_ID", ""),
+            "channel_idx": int(telegram_channel_idx) if telegram_channel_idx else None,
+        },
+        "telegram_userfeed": {
+            "api_id": os.environ.get("TELEGRAM_API_ID", ""),
+            "api_hash": os.environ.get("TELEGRAM_API_HASH", ""),
+            "session_path": os.environ.get("TELEGRAM_USER_SESSION", "telegram_user.session"),
+            "source_channel": os.environ.get("TELEGRAM_SOURCE_CHANNEL", ""),
+            "channel_idx": int(telegram_userfeed_channel_idx) if telegram_userfeed_channel_idx else None,
         },
     }
 
@@ -72,6 +88,9 @@ async def main():
         processed_messages: set = set()
         route_cache: dict = {}
         pending_bot_sends: dict = {}
+        # text -> send_time; общий для bot.py и core/telegram_bridge.py, чтобы оба
+        # канала отправки (обычные ответы и Telegram-мост) не эхались друг другу в Telegram
+        own_channel_echoes: dict = config.setdefault("_own_channel_echoes", {})
 
         def on_rx_log(event):
             if event.type != events.EventType.RX_LOG_DATA:
@@ -145,6 +164,12 @@ async def main():
 
             logger.info(f"📬 От {source_name}: '{text}'")
 
+            telegram_channel_idx = config.get("telegram_bridge", {}).get("channel_idx")
+            if (is_channel and telegram_channel_idx is not None and channel_idx == telegram_channel_idx
+                    and text not in own_channel_echoes):
+                tg_text = f"{sender}: {text}" if sender else text
+                asyncio.create_task(send_to_telegram(config, tg_text))
+
             if not is_channel:
                 try:
                     await mc.commands.send_msg(source_key, "")
@@ -177,6 +202,9 @@ async def main():
                             cutoff = send_ts - 60
                             for k in [k for k in pending_bot_sends if k < cutoff]:
                                 del pending_bot_sends[k]
+                            own_channel_echoes[response] = send_ts
+                            for k in [k for k, v in own_channel_echoes.items() if v < cutoff]:
+                                del own_channel_echoes[k]
                             channel_idx = payload.get('channel_idx', 0)
                             await mc.commands.send_chan_msg(channel_idx, response, timestamp=send_ts)
                         else:
@@ -234,6 +262,8 @@ async def main():
         await asyncio.gather(
             listen(),
             weather_broadcast_scheduler(mc, config),
+            telegram_bridge(mc, config),
+            telegram_userfeed(mc, config),
         )
     except KeyboardInterrupt:
         logger.info("\n" + "=" * 50)

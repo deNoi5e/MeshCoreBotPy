@@ -34,8 +34,34 @@ python find_device.py
 | `WEATHER_HOUR` | Час рассылки (местное время) | `7` |
 | `WEATHER_MINUTE` | Минута рассылки | `30` |
 | `WEATHER_TIMEZONE_OFFSET` | Смещение часового пояса (ч) | `6` |
+| `TELEGRAM_BOT_TOKEN` | Токен бота от @BotFather | — |
+| `TELEGRAM_CHAT_ID` | ID разрешённого Telegram-чата | — |
+| `TELEGRAM_CHANNEL_IDX` | Индекс канала MeshCore, связанного с этим чатом | — |
+| `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` | Данные приложения с my.telegram.org (для user-аккаунта) | — |
+| `TELEGRAM_USER_SESSION` | Путь к файлу сессии Telethon | `telegram_user.session` |
+| `TELEGRAM_SOURCE_CHANNEL` | Публичный Telegram-канал для чтения (`@channel` или ссылка) | — |
+| `TELEGRAM_USERFEED_CHANNEL_IDX` | Индекс канала MeshCore для сообщений из `TELEGRAM_SOURCE_CHANNEL` | — |
 
 Примеры `MESHCORE_PORT`: macOS — `/dev/tty.usbmodem101`, Linux — `/dev/ttyACM0`, Windows — `COM3`.
+
+Мост с Telegram (двусторонний, через Bot API) опционален: включается, если заданы `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`/`TELEGRAM_CHANNEL_IDX`.
+
+Чтение чужого публичного канала (только приём, через user-аккаунт) — отдельная опция: включается, если заданы `TELEGRAM_API_ID`/`TELEGRAM_API_HASH`/`TELEGRAM_SOURCE_CHANNEL`/`TELEGRAM_USERFEED_CHANNEL_IDX`. Перед первым запуском бота нужно один раз авторизоваться:
+
+```bash
+python scripts/telegram_login.py   # спросит номер телефона и код подтверждения
+```
+
+Это создаёт файл сессии (`TELEGRAM_USER_SESSION`), которым дальше пользуется бот без повторного ввода кода.
+
+Пример — пересылка оповещений МЧС Омской области об угрозе БПЛА в отдельный канал тревог:
+
+```
+TELEGRAM_SOURCE_CHANNEL=@mchs_omsk
+TELEGRAM_USERFEED_CHANNEL_IDX=<idx отдельного канала тревог>
+```
+
+Официального API у МЧС/РСЧС нет — единственный практичный способ автоматически получать эти оповещения — читать их публичный Telegram-канал.
 
 ## Команды бота
 
@@ -64,6 +90,8 @@ docker-compose up -d
 - **Каналы** — сообщение приходит как `"Имя: /команда"`, парсится по первому `:`
 - **Прямые сообщения** — перед ответом отправляется пустой ACK
 - **Рассылка погоды** — `weather_broadcast_scheduler()` работает параллельно с `listen()` через `asyncio.gather()`
+- **Мост с Telegram** — `telegram_bridge()` (`core/telegram_bridge.py`) работает параллельно через тот же `asyncio.gather()`. Сообщения из `TELEGRAM_CHAT_ID` идут через long polling Telegram Bot API, прогоняются через `dispatch()` (команды выполняются как обычно) и уходят в `TELEGRAM_CHANNEL_IDX`; сообщения из этого канала MeshCore пересылаются обратно в чат. Собственные сообщения бота не зацикливаются — они помечаются в общем `config["_own_channel_echoes"]`.
+- **Чтение чужого канала** — `telegram_userfeed()` (`core/telegram_userfeed.py`) через user-аккаунт (Telethon) слушает публичный `TELEGRAM_SOURCE_CHANNEL`, куда бот не добавлен как участник, и пересылает сообщения в `TELEGRAM_USERFEED_CHANNEL_IDX`. Только приём — в исходный Telegram-канал бот не пишет.
 
 ## Дополнительно
 
