@@ -211,11 +211,16 @@ async def main():
                         sender_timestamp = event.payload.get('sender_timestamp')
                         route_data = None
                         if sender_timestamp:
+                            best_recv_time = None
+                            best_diff = None
                             for recv_time, data in route_cache.items():
-                                if abs(sender_timestamp - recv_time) <= 5:
+                                diff = abs(sender_timestamp - recv_time)
+                                if diff <= 7 and (best_diff is None or diff < best_diff):
+                                    best_diff = diff
+                                    best_recv_time = recv_time
                                     route_data = data
-                                    logger.info(f"   🔍 Маршрут найден: sender_ts={sender_timestamp}, recv_time={recv_time}, diff={abs(sender_timestamp - recv_time)}s")
-                                    break
+                            if route_data:
+                                logger.info(f"   🔍 Маршрут найден: sender_ts={sender_timestamp}, recv_time={best_recv_time}, diff={best_diff}s")
                             if not route_data:
                                 logger.info(f"   🔍 Маршрут не найден для sender_ts={sender_timestamp}, доступно recv_times: {list(route_cache.keys())}")
                         await process_message(event.payload, is_channel=is_channel, route_data=route_data)
