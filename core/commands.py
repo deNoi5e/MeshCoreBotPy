@@ -40,8 +40,36 @@ async def _ping(ctx: Context) -> str | None:
     return f"🏓 pong ({route_info})"
 
 
+def _resolve_node_name(mc: Any, prefix: str) -> str:
+    contact = mc.get_contact_by_key_prefix(prefix)
+    logger.info(f"_resolve_node_name: prefix={prefix}, contact={contact}")
+    if contact:
+        name = contact.get("adv_name")
+        if name:
+            return name
+    return prefix
+
+
+async def _pingn(ctx: Context) -> str | None:
+    if ctx.hops == 0:
+        route_info = "Direct 📡"
+    elif ctx.route_data:
+        path = ctx.route_data.get('path', '')
+        path_len = ctx.route_data.get('path_len', ctx.hops)
+
+        step = len(path) // path_len
+
+        addrs = [_resolve_node_name(ctx.mc, path[i:i+step]) for i in range(0, len(path), step)]
+        route_info = f"{path_len} хопов: {' → '.join(addrs)}"
+        logger.info(f"   🔍 /pingn: route={ctx.route_data}, info={route_info}")
+    else:
+        route_info = f"{ctx.hops} хопов"
+        logger.info(f"   🔍 /pingn: hops={ctx.hops}, маршрут не найден в кэше")
+    return f"🏓 pong ({route_info})"
+
+
 async def _help(ctx: Context) -> str | None:
-    return "📋 Команды:\n\t🏓 /ping - проверка\n\t🌤 /weather <город> - погода\n\t🚗 /traffic - пробки в Омске\n\t❓ /help - справка\n\t🌤 /weather2 <город> - погода 2"
+    return "📋 Команды:\n\t🏓 /ping - проверка\n\t🏓 /pingn - проверка с именами узлов\n\t🌤 /weather <город> - погода\n\t🚗 /traffic - пробки в Омске\n\t❓ /help - справка\n\t🌤 /weather2 <город> - погода 2"
 
 
 async def _traffic(ctx: Context) -> str | None:
@@ -80,13 +108,18 @@ async def _weather2(ctx: Context) -> str | None:
 async def _test(ctx: Context) -> str | None: 
     return "Very long string to test splitting!!! Очень длинная строка чтобы проверить разбиение на несколько сообщений! УРА УРА :) 😁 😁 😁"
 
+async def _test2(ctx: Context) -> str | None: 
+    return f"b93a --> {_resolve_node_name(ctx.mc, "b93a")}\nb9 --> {_resolve_node_name(ctx.mc, "b9")}"
+
 COMMANDS: dict[str, Callable[..., Coroutine]] = {
     "/ping": _ping,
+    "/pingn": _pingn,
     "/help": _help,
     "/weather": _weather,
     "/weathernow": _weathernow,
     "/traffic": _traffic,
     "/test": _test,
+    "/test2": _test2,
     "/weather2": _weather2,
 }
 

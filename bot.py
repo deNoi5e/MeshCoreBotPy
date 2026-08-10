@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from meshcore import MeshCore, events
 
 from core.commands import dispatch
+from core.msgsplit import split_msg, str_byte_len
 from core.weather import to_lat, weather_broadcast_scheduler
 
 load_dotenv()
@@ -23,28 +24,6 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
-
-
-def str_byte_len(text: str) -> int:
-    return len(text.encode('utf-8'))
-
-
-def split_msg(msg: str, sender: str, max_len: int) -> list[str]:
-    result = []
-    words = msg.split(" ")
-    word_index = 0
-    while word_index < len(words):
-        if not sender == "":
-            part = f"@[{sender}] {words[word_index]}"
-        else:
-            part = f"{words[word_index]}"
-
-        word_index += 1
-        while word_index < len(words) and str_byte_len(part + f" {words[word_index]}") <= max_len:
-            part += f" {words[word_index]}"
-            word_index += 1
-        result.append(part)
-    return result
 
 
 def test_split():
@@ -79,6 +58,12 @@ async def main():
     logger.info("🎉 MeshCore Bot запущен!")
     logger.info(f"📡 Подключено к {port}")
     logger.info("=" * 50 + "\n")
+
+    await mc.ensure_contacts()
+    mc.auto_update_contacts = True
+    logger.info(f"📇 Контактов синхронизировано: {len(mc.contacts)}")
+    for contact in mc.contacts.values():
+        logger.info(f"   Контакт: {contact}")
 
     async def listen():
         await mc.start_auto_message_fetching()
