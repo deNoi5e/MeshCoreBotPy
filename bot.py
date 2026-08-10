@@ -68,6 +68,22 @@ async def main():
     #await mc.connect()
     await mc.commands.set_flood_scope(None)
     mc.set_decrypt_channel_logs(True)
+
+    # decrypt_channels в RX_LOG_DATA (msg_hash/pkt_hash для точного сопоставления
+    # маршрута с сообщением) работает только для каналов, чей секрет библиотека
+    # уже знает — а узнаёт она его только через ответ на get_channel().
+    max_channel_idx = int(os.environ.get("MAX_CHANNEL_IDX", "10"))
+    for channel_idx in range(max_channel_idx + 1):
+        try:
+            event = await mc.commands.get_channel(channel_idx)
+            channel_name = event.payload.get("channel_name", "") if event else ""
+            if channel_name:
+                logger.info(f"   ✅ Канал {channel_idx} получен: name='{channel_name}'")
+            else:
+                logger.info(f"   Канал {channel_idx} пуст, пропускаю")
+        except Exception as e:
+            logger.debug(f"   Канал {channel_idx} недоступен: {e}")
+
     logger.info("=" * 50)
     logger.info("🎉 MeshCore Bot запущен!")
     logger.info(f"📡 Подключено к {port}")
@@ -85,12 +101,16 @@ async def main():
 
         processed_messages: set = set()
         route_cache: dict = {}
+        route_by_hash: dict = {}
         pending_bot_sends: dict = {}
 
         def on_rx_log(event):
             if event.type != events.EventType.RX_LOG_DATA:
                 return
             rx_log = event.payload
+
+            logger.info(f"  ----- rx_log payload = {rx_log}")
+
             payload_type = rx_log.get('payload_type')
             sender_timestamp = rx_log.get('sender_timestamp')
 
@@ -112,10 +132,20 @@ async def main():
             recv_time = rx_log.get('recv_time')
             path = rx_log.get('path')
             path_len = rx_log.get('path_len')
+            msg_hash = rx_log.get('msg_hash')
+            current_time = int(datetime.now().timestamp())
+            if msg_hash is not None and path:
+                route_by_hash[msg_hash] = {
+                    'path': path,
+                    'path_len': path_len,
+                    'stored_at': current_time,
+                }
+                logger.info(f"   🔍 RX_LOG сохранена по msg_hash={msg_hash}: path={path}, path_len={path_len}")
+                for k in [k for k, v in route_by_hash.items() if current_time - v['stored_at'] > 30]:
+                    del route_by_hash[k]
             if recv_time and path:
                 route_cache[recv_time] = {'path': path, 'path_len': path_len}
                 logger.info(f"   🔍 RX_LOG сохранена: recv_time={recv_time}, path={path}, path_len={path_len}")
-                current_time = int(datetime.now().timestamp())
                 for k in [k for k in route_cache if current_time - k > 30]:
                     del route_cache[k]
 
@@ -223,8 +253,19 @@ async def main():
                         is_channel = event.type == events.EventType.CHANNEL_MSG_RECV
                         logger.info(f"   is_channel = {is_channel}   event.type = {event.type}")
                         sender_timestamp = event.payload.get('sender_timestamp')
+                        txt_hash = event.payload.get('txt_hash')
                         route_data = None
-                        if sender_timestamp:
+                        if txt_hash is not None:
+                            # RX_LOG (с точным msg_hash) обычно приходит чуть позже самого
+                            # сообщения — недолго подождём его, прежде чем откатываться
+                            # на менее точный подбор по времени.
+                            for _ in range(10):
+                                if txt_hash in route_by_hash:
+                                    route_data = route_by_hash[txt_hash]
+                                    logger.info(f"   🔍 Маршрут найден точно по msg_hash={txt_hash}: path={route_data['path']}")
+                                    break
+                                await asyncio.sleep(0.2)
+                        if route_data is None and sender_timestamp:
                             best_recv_time = None
                             best_diff = None
                             for recv_time, data in route_cache.items():
@@ -235,7 +276,7 @@ async def main():
                                     route_data = data
                             if route_data:
                                 logger.info(f"   🔍 Маршрут найден: sender_ts={sender_timestamp}, recv_time={best_recv_time}, diff={best_diff}s")
-                            if not route_data:
+                            else:
                                 logger.info(f"   🔍 Маршрут не найден для sender_ts={sender_timestamp}, доступно recv_times: {list(route_cache.keys())}")
                         await process_message(event.payload, is_channel=is_channel, route_data=route_data)
                 except asyncio.CancelledError:
