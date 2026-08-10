@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 import asyncio
+import io
 import logging
 import os
+import sys
 import time
 import traceback
 from datetime import datetime
@@ -15,13 +17,25 @@ from core.weather import to_lat, weather_broadcast_scheduler
 
 load_dotenv()
 
+# stdout/stderr при перенаправлении в файл на Windows наследуют системную
+# кодировку (cp1251) вместо UTF-8, из-за чего логирование эмодзи роняет
+# UnicodeEncodeError внутри logging (перехватывается, но строка теряется).
+if isinstance(sys.stderr, io.TextIOWrapper):
+    sys.stderr.reconfigure(encoding='utf-8', errors='backslashreplace')
+if isinstance(sys.stdout, io.TextIOWrapper):
+    sys.stdout.reconfigure(encoding='utf-8', errors='backslashreplace')
+
+log_filename = datetime.now().strftime('bot_%Y.%m.%d_%H-%M-%S.log')
+
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(message)s',
+    format='[%(asctime)s.%(msecs)03d] - %(message)s',
+    datefmt='%Y.%m.%d %H:%M:%S',
     handlers=[
-        logging.FileHandler('bot.log'),
+        logging.FileHandler(log_filename, encoding='utf-8'),
         logging.StreamHandler()
-    ]
+    ],
+    force=True
 )
 logger = logging.getLogger(__name__)
 
