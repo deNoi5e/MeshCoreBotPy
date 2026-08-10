@@ -28,7 +28,10 @@ async def _ping(ctx: Context) -> str | None:
     elif ctx.route_data:
         path = ctx.route_data.get('path', '')
         path_len = ctx.route_data.get('path_len', ctx.hops)
-        addrs = [path[i:i+2] for i in range(0, len(path), 2)]
+
+        step = len(path) // path_len;
+
+        addrs = [path[i:i+step] for i in range(0, len(path), step)]
         route_info = f"{path_len} хопов: {' → '.join(addrs)}"
         logger.info(f"   🔍 /ping: route={ctx.route_data}, info={route_info}")
     else:
