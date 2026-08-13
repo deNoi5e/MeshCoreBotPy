@@ -76,7 +76,8 @@ class Weather:
     time: Optional[str] = None                 # локальное время замера
 
     def __str__(self) -> str:
-        lines = [f"{self.city} ({self.country if self.country else "UNK"}) {self.temperature:+.0f}({self.feels_like:+.0f}),{self.condition},{self.wind_dir}{self.wind_speed:.0f}км/ч,{self.humidity}%,{self.pressure_mmhg:.0f}мм.р.с."]
+        wind_speed_ms = self.wind_speed / 3.6
+        lines = [f"{self.city} ({self.country if self.country else "UNK"}) {self.temperature:+.0f}({self.feels_like:+.0f}),{self.condition},{self.wind_dir},{wind_speed_ms:.1f}м/с,{self.humidity}%,{self.pressure_mmhg:.0f}мм.р.с."]
         return "\n".join(lines)
 
     def __str2__(self) -> str:
