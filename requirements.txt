@@ -2,4 +2,6 @@ meshcore-cli>=1.5.7
 meshcore>=2.3.7
 bleak>=0.22
 aiohttp>=3.9
+aiohttp-socks>=0.7.1
 python-dotenv>=1.0
+aiogram>=3.0

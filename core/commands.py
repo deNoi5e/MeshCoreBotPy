@@ -4,8 +4,9 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Callable, Coroutine
 
-from .traffic import get_traffic_omsk
-from .weather import get_daily_forecast, get_weather, to_lat
+from .weather import get_daily_forecast, get_weather, get_cached_weather, to_lat
+from .narodmon import format_myweather, parse_narodmon_sensors
+from .yandex_weather import get_yandex_weather, get_yandex_forecast, get_yandex_forecast
 
 logger = logging.getLogger(__name__)
 
@@ -37,20 +38,84 @@ async def _ping(ctx: Context) -> str | None:
 
 
 async def _help(ctx: Context) -> str | None:
-    return "📋 Команды:\n🏓 /ping - проверка\n🌤 /weather <город> - погода\n🚗 /traffic - пробки в Омске\n❓ /help - справка"
-
-
-async def _traffic(ctx: Context) -> str | None:
-    return await get_traffic_omsk()
+    return "🏓 /ping -проверка\n🌤 /weather -погода\n🌡 /myweather -что за окном\n🌥 /yapogoda -Япогода\n📅 /yaprognoz -Япрогноз"
 
 
 async def _weather(ctx: Context) -> str | None:
-    if not ctx.args:
-        return "❓ Использование: /weather <город>  например: /weather Москва"
     if not ctx.weather_api_key:
         return "❌ API ключ погоды не настроен"
-    result = await get_weather(ctx.args, ctx.weather_api_key)
-    logger.info(f"   🌤 Погода для «{ctx.args}» получена")
+
+    wb = ctx.config.get("weather_broadcast", {})
+    default_city = wb.get("city", "Omsk")
+
+    city = ctx.args.strip() if ctx.args.strip() else default_city
+    is_default = city.lower() == default_city.lower()
+
+    if is_default:
+        cached = get_cached_weather(city)
+        if cached:
+            logger.info(f"   🌤 Погода для «{city}» из кэша")
+            return cached
+        logger.info(f"   🌤 Кэш пуст для «{city}», делаю запрос к API")
+
+    result = await get_weather(city, ctx.weather_api_key)
+    logger.info(f"   🌤 Погода для «{city}» получена")
+    return result
+
+
+async def _myweather(ctx: Context) -> str | None:
+    narodmon_cfg = ctx.config.get("narodmon", {})
+    api_key = narodmon_cfg.get("api_key", "")
+    sensors_raw = narodmon_cfg.get("sensors_raw", "")
+    if not api_key:
+        return "❌ NARODMON_API_KEY не настроен"
+    if not sensors_raw:
+        return "❌ NARODMON_SENSORS не настроен"
+    sensors = parse_narodmon_sensors(sensors_raw)
+    result = await format_myweather(sensors, api_key)
+    logger.info(f"   🌡 /myweather: {result}")
+    return result
+
+
+async def _yapogoda(ctx: Context) -> str | None:
+    ya_cfg = ctx.config.get("yandex_weather", {})
+    api_key = ya_cfg.get("api_key", "")
+    lat = ya_cfg.get("lat", 0.0)
+    lon = ya_cfg.get("lon", 0.0)
+    if not api_key:
+        return "❌ YANDEX_WEATHER_API_KEY не настроен"
+    if not lat or not lon:
+        return "❌ YANDEX_WEATHER_LAT/LON не настроены"
+    result = await get_yandex_weather(api_key, lat, lon)
+    logger.info(f"   🌥 /yapogoda: {result}")
+    return result
+
+
+async def _yaprognoz(ctx: Context) -> str | None:
+    ya_cfg = ctx.config.get("yandex_weather", {})
+    api_key = ya_cfg.get("api_key", "")
+    lat = ya_cfg.get("lat", 0.0)
+    lon = ya_cfg.get("lon", 0.0)
+    if not api_key:
+        return "❌ YANDEX_WEATHER_API_KEY не настроен"
+    if not lat or not lon:
+        return "❌ YANDEX_WEATHER_LAT/LON не настроены"
+    result = await get_yandex_forecast(api_key, lat, lon)
+    logger.info(f"   🌥 /yaprognoz: {result}")
+    return result
+
+
+async def _yaprognoz(ctx: Context) -> str | None:
+    ya_cfg = ctx.config.get("yandex_weather", {})
+    api_key = ya_cfg.get("api_key", "")
+    lat = ya_cfg.get("lat", 0.0)
+    lon = ya_cfg.get("lon", 0.0)
+    if not api_key:
+        return "❌ YANDEX_WEATHER_API_KEY не настроен"
+    if not lat or not lon:
+        return "❌ YANDEX_WEATHER_LAT/LON не настроены"
+    result = await get_yandex_forecast(api_key, lat, lon)
+    logger.info(f"   📅 /yaprognoz: {result}")
     return result
 
 
@@ -73,8 +138,10 @@ COMMANDS: dict[str, Callable[..., Coroutine]] = {
     "/ping": _ping,
     "/help": _help,
     "/weather": _weather,
+    "/myweather": _myweather,
+    "/yapogoda": _yapogoda,
+    "/yaprognoz": _yaprognoz,
     "/weathernow": _weathernow,
-    "/traffic": _traffic,
 }
 
 

@@ -9,7 +9,10 @@ from dotenv import load_dotenv
 from meshcore import MeshCore, events
 
 from core.commands import dispatch
-from core.weather import to_lat, weather_broadcast_scheduler
+from core.weather import to_lat, weather_broadcast_scheduler, weather_cache_updater
+from core.yandex_weather import yandex_weather_cache_updater
+from core.answers import load_answers, find_answer
+from core.tg_relay import make_tg_relay_config, relay_to_telegram, tg_poll_loop
 
 load_dotenv()
 
@@ -24,8 +27,71 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+async def create_connection() -> MeshCore:
+    """Создать подключение к устройству согласно настройкам .env.
+
+    MESHCORE_CONNECTION=serial  — Serial/COM порт (MESHCORE_PORT)
+    MESHCORE_CONNECTION=ble     — Bluetooth LE (MESHCORE_BLE_ADDRESS)
+    MESHCORE_CONNECTION=tcp     — TCP/IP (MESHCORE_TCP_HOST, MESHCORE_TCP_PORT)
+
+    Для BLE: create_ble() уже вызывает connect() внутри, не нужно вызывать повторно.
+    PIN (MESHCORE_BLE_PIN) передаётся только если явно задан в .env.
+    """
+    conn_type = os.environ.get("MESHCORE_CONNECTION", "serial").lower().strip()
+
+    if conn_type == "ble":
+        address = os.environ.get("MESHCORE_BLE_ADDRESS", "")
+        if not address:
+            raise ValueError("MESHCORE_BLE_ADDRESS не задан в .env")
+        pin = os.environ.get("MESHCORE_BLE_PIN", "").strip() or None
+        logger.info(f"🔵 BLE подключение к {address}{' (с PIN)' if pin else ''}...")
+        mc = await MeshCore.create_ble(address, pin=pin)
+        if mc is None:
+            raise RuntimeError("BLE подключение не удалось — устройство не ответило (create_ble вернул None)")
+        logger.info("🔵 BLE подключение успешно")
+        return mc
+
+    elif conn_type == "tcp":
+        host = os.environ.get("MESHCORE_TCP_HOST", "")
+        port = int(os.environ.get("MESHCORE_TCP_PORT", "4000"))
+        if not host:
+            raise ValueError("MESHCORE_TCP_HOST не задан в .env")
+        logger.info(f"🌐 Подключение по TCP к {host}:{port}")
+        return await MeshCore.create_tcp(host, port)
+
+    else:  # serial (по умолчанию)
+        port = os.environ.get("MESHCORE_PORT", "")
+        if not port:
+            raise ValueError("MESHCORE_PORT не задан в .env")
+        logger.info(f"🔌 Подключение по Serial к {port}")
+        return await MeshCore.create_serial(port=port)
+
+
+_mtproto_process: asyncio.subprocess.Process | None = None
+
+
+async def _start_mtproto_converter() -> None:
+    """Запустить mtProto_to_socks5.py как фоновый subprocess."""
+    global _mtproto_process
+    script = os.path.join(os.path.dirname(__file__), "mtProto_to_socks5.py")
+    if not os.path.exists(script):
+        logger.error(f"❌ MTProto конвертер не найден: {script}")
+        return
+    try:
+        import sys
+        _mtproto_process = await asyncio.create_subprocess_exec(
+            sys.executable, script,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        # Ждём немного чтобы конвертер успел стартовать
+        await asyncio.sleep(1.5)
+        logger.info(f"🔌 MTProto→SOCKS5 конвертер запущен (PID {_mtproto_process.pid})")
+    except Exception as e:
+        logger.error(f"❌ Не удалось запустить MTProto конвертер: {e}")
+
+
 async def main():
-    port = os.environ["MESHCORE_PORT"]
     weather_api_key = os.environ.get("OPENWEATHERMAP_API_KEY", "")
     config = {
         "openweathermap_api_key": weather_api_key,
@@ -35,16 +101,46 @@ async def main():
             "hour": int(os.environ.get("WEATHER_HOUR", "7")),
             "minute": int(os.environ.get("WEATHER_MINUTE", "30")),
             "timezone_offset_hours": int(os.environ.get("WEATHER_TIMEZONE_OFFSET", "6")),
+            "broadcast_period": os.environ.get("WEATHER_BROADCAST_PERIOD", "1d"),
+            "weather_source": os.environ.get("WEATHER_SOURCE", "owm").lower().strip(),
+        },
+        "narodmon": {
+            "api_key": os.environ.get("NARODMON_API_KEY", ""),
+            "sensors_raw": os.environ.get("NARODMON_SENSORS", ""),
+        },
+        "yandex_weather": {
+            "api_key": os.environ.get("YANDEX_WEATHER_API_KEY", ""),
+            "lat": float(os.environ.get("YANDEX_WEATHER_LAT", "0") or "0"),
+            "lon": float(os.environ.get("YANDEX_WEATHER_LON", "0") or "0"),
         },
     }
 
-    mc = await MeshCore.create_serial(port=port)
-    await mc.connect()
+    mc = await create_connection()
+    # Для serial/tcp нужен явный connect(), для BLE он уже вызван внутри create_ble()
+    conn_type = os.environ.get("MESHCORE_CONNECTION", "serial").lower().strip()
+    if conn_type != "ble":
+        await mc.connect()
     await mc.commands.set_flood_scope(None)
     mc.set_decrypt_channel_logs(True)
+
+    # Конфиг Telegram relay
+    tg_cfg = make_tg_relay_config(dict(os.environ))
+    if tg_cfg.enabled:
+        logger.info(f"📨 Telegram relay включён: chat={tg_cfg.chat_id}, topic={tg_cfg.topic_id}, канал={tg_cfg.channel_idx}")
+        # Автозапуск MTProto→SOCKS5 конвертера если нужен
+        if tg_cfg.proxy.proxy_type == "mtproto":
+            await _start_mtproto_converter()
+    else:
+        logger.info("📨 Telegram relay отключён (TG_RELAY_ENABLED=false)")
+
+    # Загружаем правила автоответов
+    answers_enabled = os.environ.get("ANSWERS_ENABLED", "true").strip().lower() in ("true", "1", "yes")
+    answer_rules = load_answers("answers.txt") if answers_enabled else []
+    if not answers_enabled:
+        logger.info("📭 Автоответы отключены (ANSWERS_ENABLED=false)")
+
     logger.info("=" * 50)
     logger.info("🎉 MeshCore Bot запущен!")
-    logger.info(f"📡 Подключено к {port}")
     logger.info("=" * 50 + "\n")
 
     async def listen():
@@ -122,6 +218,22 @@ async def main():
 
             logger.info(f"📬 От {source_name}: '{text}'")
 
+            # Пересылка в Telegram (только для нужного канала)
+            if is_channel and tg_cfg.enabled and channel_idx == tg_cfg.channel_idx:
+                # Имя отправителя: часть до ':' из полного текста канала
+                if ':' in full_text:
+                    sender_name = full_text.split(':', 1)[0].strip()
+                else:
+                    sender_name = f"ch{channel_idx}"
+                _hops = 0 if path_len == 255 else path_len
+                await relay_to_telegram(
+                    sender_name=sender_name,
+                    text=text,
+                    hops=_hops,
+                    route_data=route_data,
+                    cfg=tg_cfg,
+                )
+
             if not is_channel:
                 try:
                     await mc.commands.send_msg(source_key, "")
@@ -139,8 +251,16 @@ async def main():
                 mc=mc,
             )
 
+            # Если команда не распознана и это канал — проверяем автоответы
+            if response is None and is_channel:
+                response = find_answer(text, channel_idx, answer_rules)
+
             if response is not None:
                 response = to_lat(response)
+                # Обрезаем по байтам — MeshCore лимит 143 байта
+                encoded = response.encode("utf-8")
+                if len(encoded) > 143:
+                    response = encoded[:143].decode("utf-8", errors="ignore")
                 try:
                     logger.info("   📤 Отправляю ответ...")
                     if is_channel:
@@ -199,17 +319,28 @@ async def main():
         await asyncio.gather(
             listen(),
             weather_broadcast_scheduler(mc, config),
+            weather_cache_updater(config),
+            yandex_weather_cache_updater(config),
+            tg_poll_loop(tg_cfg, mc),
         )
     except KeyboardInterrupt:
         logger.info("\n" + "=" * 50)
         logger.info("🛑 Бот остановлен пользователем")
         logger.info("=" * 50)
     except Exception as e:
-        logger.error(f"Ошибка в listen(): {e}")
+        logger.error(f"Ошибка в main(): {e}")
     finally:
         await mc.stop_auto_message_fetching()
         await mc.disconnect()
         logger.info("👋 Отключено от устройства")
+        # Останавливаем MTProto конвертер если он был запущен
+        if _mtproto_process is not None:
+            try:
+                _mtproto_process.terminate()
+                await _mtproto_process.wait()
+                logger.info("🔌 MTProto конвертер остановлен")
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
