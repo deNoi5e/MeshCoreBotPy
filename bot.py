@@ -109,7 +109,7 @@ async def main():
                 return
             rx_log = event.payload
 
-            logger.info(f"  ----- rx_log payload = {rx_log}")
+            #logger.info(f"  ----- rx_log payload = {rx_log}")
 
             payload_type = rx_log.get('payload_type')
             sender_timestamp = rx_log.get('sender_timestamp')
@@ -203,7 +203,9 @@ async def main():
                 route_data=route_data,
                 weather_api_key=weather_api_key,
                 config=config,
-                mc=mc
+                mc=mc,
+                sender_key="" if is_channel else source_key,
+                sender_name=sender if is_channel else "",
             )
 
             if response_all is not None:

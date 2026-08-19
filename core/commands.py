@@ -20,6 +20,8 @@ class Context:
     weather_api_key: str
     config: dict
     mc: Any
+    sender_key: str = ""
+    sender_name: str = ""
 
 
 async def _ping(ctx: Context) -> str | None:
@@ -108,8 +110,30 @@ async def _weather2(ctx: Context) -> str | None:
 async def _test(ctx: Context) -> str | None: 
     return "Very long string to test splitting!!! Очень длинная строка чтобы проверить разбиение на несколько сообщений! УРА УРА :) 😁 😁 😁"
 
-async def _test2(ctx: Context) -> str | None: 
-    return f"b93a --> {_resolve_node_name(ctx.mc, "b93a")}\nb9 --> {_resolve_node_name(ctx.mc, "b9")}"
+async def _test3(ctx: Context) -> str | None:
+    # В канале ключа отправителя нет в протоколе — резолвим по имени
+    # (adv_name), которое отправитель сам вписал в текст "Имя: сообщение".
+    # Это эвристика по нику, а не крипто-идентификация: при совпадении
+    # имён у разных контактов результат может быть неверным.
+    sender_name = ctx.sender_name
+    if not sender_name:
+        return "❌ Имя отправителя не найдено (команда рассчитана на канал)"
+    contact = ctx.mc.get_contact_by_name(sender_name)
+    if not contact:
+        return f"❌ Контакт «{sender_name}» не найден"
+    key = contact.get("public_key", "")
+    key1, key2 = key[:2], key[:4]
+    return f"{sender_name} → {key1} → {_resolve_node_name(ctx.mc, key1)}\n{key2} → {_resolve_node_name(ctx.mc, key2)}"
+
+
+async def _test2(ctx: Context) -> str | None:
+    key = ctx.sender_key
+    if not key:
+        return f"Key unknown, try in private\ntest resolve: b93a → {_resolve_node_name(ctx.mc, "b93a")}\nb9 → {_resolve_node_name(ctx.mc, "b9")}"
+    key1 = key[:2]
+    key2 = key[:4]
+    key3 = key[:6]
+    return f"{key1} → {_resolve_node_name(ctx.mc, key1)}\n{key2} → {_resolve_node_name(ctx.mc, key2)}\n{key3} → {_resolve_node_name(ctx.mc, key3)}"
 
 COMMANDS: dict[str, Callable[..., Coroutine]] = {
     "/ping": _ping,
@@ -120,12 +144,14 @@ COMMANDS: dict[str, Callable[..., Coroutine]] = {
     "/traffic": _traffic,
     "/test": _test,
     "/test2": _test2,
+    "/test3": _test3,
     "/weather2": _weather2,
 }
 
 
 async def dispatch(text: str, *, hops: int, route_data: dict | None,
-                   weather_api_key: str, config: dict, mc: Any) -> str | None:
+                   weather_api_key: str, config: dict, mc: Any,
+                   sender_key: str = "", sender_name: str = "") -> str | None:
     if not text.startswith('/'):
         return None
     parts = text.split(None, 1)
@@ -133,12 +159,13 @@ async def dispatch(text: str, *, hops: int, route_data: dict | None,
     handler = COMMANDS.get(cmd)
     if handler is None:
         return None
-    
+
     logger.info(f"route_data = {route_data}")
 
     ctx = Context(
         text=text, args=args, hops=hops, route_data=route_data,
         weather_api_key=weather_api_key, config=config, mc=mc,
+        sender_key=sender_key, sender_name=sender_name,
     )
 
     result = await handler(ctx)
