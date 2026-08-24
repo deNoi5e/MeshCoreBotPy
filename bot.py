@@ -63,6 +63,19 @@ async def main():
             "timezone_offset_hours": int(os.environ.get("WEATHER_TIMEZONE_OFFSET", "6")),
         },
     }
+    advert_interval_minutes = int(os.environ.get("ADVERT_INTERVAL_MINUTES", "30"))
+    if advert_interval_minutes <= 0:
+        logger.warning(
+            f"⚠️  ADVERT_INTERVAL_MINUTES={advert_interval_minutes} некорректно, использую 30"
+        )
+        advert_interval_minutes = 30
+
+    advert_flood_interval_hours = int(os.environ.get("ADVERT_FLOOD_INTERVAL_HOURS", "6"))
+    if advert_flood_interval_hours <= 0:
+        logger.warning(
+            f"⚠️  ADVERT_FLOOD_INTERVAL_HOURS={advert_flood_interval_hours} некорректно, использую 6"
+        )
+        advert_flood_interval_hours = 6
 
     mc = await MeshCore.create_serial(port=port)
     #await mc.connect()
@@ -95,14 +108,28 @@ async def main():
     for contact in mc.contacts.values():
         logger.info(f"   Контакт: {contact}")
 
-    async def send_startup_advert():
-        await asyncio.sleep(5.0)
-        logger.info("📢 Отправляю широковещательный advert...")
+    async def send_advert(flood: bool):
+        kind = "широковещательный (flood)" if flood else "обычный"
+        logger.info(f"📢 Отправляю {kind} advert...")
         try:
-            result = await mc.commands.send_advert(flood=False)
-            logger.info(f"   ✅ Advert отправлен успешно: {result}")
+            result = await mc.commands.send_advert(flood=flood)
+            logger.info(f"   ✅ Advert ({kind}) отправлен успешно: {result}")
         except Exception as e:
-            logger.error(f"   ❌ Ошибка отправки advert: {e}")
+            logger.error(f"   ❌ Ошибка отправки advert ({kind}): {e}")
+
+    async def advert_scheduler():
+        await asyncio.sleep(5.0)
+        await send_advert(flood=True)
+
+        interval_seconds = advert_interval_minutes * 60
+        flood_every_n_ticks = max(
+            1, round((advert_flood_interval_hours * 3600) / interval_seconds)
+        )
+        tick = 0
+        while True:
+            await asyncio.sleep(interval_seconds)
+            tick += 1
+            await send_advert(flood=(tick % flood_every_n_ticks == 0))
 
     async def listen():
         await mc.start_auto_message_fetching()
@@ -300,7 +327,7 @@ async def main():
         await asyncio.gather(
             listen(),
             weather_broadcast_scheduler(mc, config),
-            send_startup_advert(),
+            advert_scheduler(),
         )
     except KeyboardInterrupt:
         logger.info("\n" + "=" * 50)
