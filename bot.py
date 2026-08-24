@@ -95,6 +95,15 @@ async def main():
     for contact in mc.contacts.values():
         logger.info(f"   Контакт: {contact}")
 
+    async def send_startup_advert():
+        await asyncio.sleep(5.0)
+        logger.info("📢 Отправляю широковещательный advert...")
+        try:
+            result = await mc.commands.send_advert(flood=False)
+            logger.info(f"   ✅ Advert отправлен успешно: {result}")
+        except Exception as e:
+            logger.error(f"   ❌ Ошибка отправки advert: {e}")
+
     async def listen():
         await mc.start_auto_message_fetching()
         logger.info("🤖 Бот готов! Ожидаю входящие сообщения...\n")
@@ -291,6 +300,7 @@ async def main():
         await asyncio.gather(
             listen(),
             weather_broadcast_scheduler(mc, config),
+            send_startup_advert(),
         )
     except KeyboardInterrupt:
         logger.info("\n" + "=" * 50)
