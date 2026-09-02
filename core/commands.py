@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Coroutine
 
 from .currency import get_rates
+from .mercury import get_mercury
 from .moon import OMSK_LAT, OMSK_LON, get_moon
 from .traffic import get_traffic_omsk
 from .versions import get_latest_versions
@@ -74,7 +75,16 @@ async def _pingn(ctx: Context) -> str | None:
 
 
 async def _help(ctx: Context) -> str | None:
-    return "📋 Команды:\n\t🏓 /ping - проверка\n\t🏓 /pingn - проверка с именами узлов\n\t🌤 /weather <город> - погода\n\t🚗 /traffic - пробки в Омске\n\t💱 /rate - курсы валют ЦБ РФ\n\t🆕 /ver - свежие версии MeshCore\n\t🌔 /moon - фаза Луны\n\t❓ /help - справка\n\t🌤 /weather2 <город> - погода 2"
+    return "📋 Команды:\n\t🏓 /ping - проверка\n\t🏓 " \
+    "/pingn - проверка с именами узлов\n\t🌤 " \
+    "/weather <город> - погода\n\t🚗 " \
+    "/traffic - пробки в Омске\n\t💱 " \
+    "/rate - курсы валют ЦБ РФ\n\t🆕 " \
+    "/ver - свежие версии MeshCore\n\t🌔 " \
+    "/help - справка\n\t🌤 " \
+    "/weather2 <город> - погода 2"    
+#    "/moon - фаза Луны\n\t☿ " \
+#    "/mercury - ретрограда Меркурия\n\t❓ "
 
 
 async def _traffic(ctx: Context) -> str | None:
@@ -95,6 +105,13 @@ async def _moon(ctx: Context) -> str | None:
         lat=moon.get("lat", OMSK_LAT),
         lon=moon.get("lon", OMSK_LON),
         tz_offset=moon.get("timezone_offset_hours", 6.0),
+    )
+
+
+async def _mercury(ctx: Context) -> str | None:
+    mercury = ctx.config.get("mercury", {})
+    return await get_mercury(
+        tz_offset=mercury.get("timezone_offset_hours", 6.0),
     )
 
 
@@ -169,6 +186,9 @@ COMMANDS: dict[str, Callable[..., Coroutine]] = {
     "/versions": _ver,
     "/moon": _moon,
     "/luna": _moon,
+    "/mercury": _mercury,
+    "/merc": _mercury,
+    "/retro": _mercury,
     "/test": _test,
     "/test2": _test2,
     "/test3": _test3,

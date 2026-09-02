@@ -70,6 +70,11 @@ async def main():
             "lon": float(os.environ.get("MOON_LON", str(OMSK_LON))),
             "timezone_offset_hours": int(os.environ.get("WEATHER_TIMEZONE_OFFSET", "6")),
         },
+        # Ретрограда — геоцентрическое явление, одинаковое для всей Земли,
+        # поэтому от места не зависит: нужен только часовой пояс вывода.
+        "mercury": {
+            "timezone_offset_hours": int(os.environ.get("WEATHER_TIMEZONE_OFFSET", "6")),
+        },
     }
     advert_interval_minutes = int(os.environ.get("ADVERT_INTERVAL_MINUTES", "30"))
     if advert_interval_minutes <= 0:
