@@ -166,7 +166,7 @@ async def _help(ctx: Context) -> str | None:
     if not query:
         items = " ".join(f"{info['icon']}{name}" for name, info in HELP_INFO.items()
                           if name not in _HELP_SKIP_SHORT)
-        return "Commands: " + items + "\n/help COMMAND - подробнее"
+        return items + "\n/help COMMAND"
 
     name = query.split()[0].lower()
     if not name.startswith("/"):
