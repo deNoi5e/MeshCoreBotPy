@@ -75,17 +75,112 @@ async def _pingn(ctx: Context) -> str | None:
     return f"🏓 pong ({route_info})"
 
 
+# Справка по командам: иконка + имя для общего "/help" и подробное описание
+# (укладывается в 130 байт - лимит одного LoRa-сообщения) для "/help <команда>".
+# Ключ - основное имя команды; алиасы перечислены в описании отдельно.
+# Часть команд (см. _help.skip) не выводится в кратком списке, но остаётся
+# доступной через "/help <команда>" - служебные (/test*) и те, что не влезли
+# бы в лимит краткого списка (/moon, /mercury, /doomsday, /weathernow).
+HELP_INFO: dict[str, dict[str, str]] = {
+    "/ping": {
+        "icon": "🏓",
+        "long": "🏓 /ping - проверка связи, маршрут (Direct или хопы).",
+    },
+    "/pingn": {
+        "icon": "🏓",
+        "long": "🏓 /pingn - как /ping, но хопы с именами узлов.",
+    },
+    "/weather": {
+        "icon": "🌤",
+        "long": "🌤 /weather <город> - текущая погода (OpenWeatherMap).",
+    },
+    "/weather2": {
+        "icon": "🌤",
+        "long": "🌤 /weather2 <город> - погода (Open-Meteo, без города - Омск).",
+    },
+    "/traffic": {
+        "icon": "🚗",
+        "long": "🚗 /traffic - балл пробок в Омске (ngs55.ru).",
+    },
+    "/rate": {
+        "icon": "💱",
+        "long": "💱 /rate (/kurs) - курсы USD/EUR/CNY к рублю по ЦБ РФ.",
+    },
+    "/ver": {
+        "icon": "🆕",
+        "long": "🆕 /ver (/version) - свежие версии прошивки MeshCore и приложения.",
+    },
+    "/moon": {
+        "icon": "🌔",
+        "long": "🌔 /moon (/luna) - фаза Луны, восход/заход, ближайшие пол./новолуние.",
+    },
+    "/mercury": {
+        "icon": "☿",
+        "long": "☿ /mercury (/merc, /retro) - идёт ли ретро Меркурия и когда ближайшая.",
+    },
+    "/help": {
+        "icon": "❓",
+        "long": "❓ /help [команда] - список команд или справка по одной.",
+    },
+    "/doomsday": {
+        "icon": "🕛",
+        "long": "🕛 /doomsday - Часы Судного дня: сколько до полуночи (thebulletin.org).",
+    },
+    "/weathernow": {
+        "icon": "🌤",
+        "long": "🌤 /weathernow - шлёт дневной прогноз погоды в канал погоды.",
+    },
+    "/test": {
+        "icon": "🔧",
+        "long": "🔧 /test - служебная: проверка разбиения длинного ответа на части.",
+    },
+    "/test2": {
+        "icon": "🔧",
+        "long": "🔧 /test2 - служебная: резолв имени узла по ключу отправителя (личка).",
+    },
+    "/test3": {
+        "icon": "🔧",
+        "long": "🔧 /test3 - служебная: резолв имени узла по имени отправителя (канал).",
+    },
+}
+
+# Алиасы команд -> основное имя, по которому ищется описание в HELP_INFO.
+_HELP_ALIASES: dict[str, str] = {
+    "/kurs": "/rate",
+    "/version": "/ver",
+    "/versions": "/ver",
+    "/luna": "/moon",
+    "/merc": "/mercury",
+    "/retro": "/mercury",
+}
+
+
+# Команды, не показываемые в кратком "/help" (не влезают в лимит одного
+# LoRa-сообщения или служебные), но доступные через "/help <команда>"
+# и полностью - через "/helpex".
+_HELP_SKIP_SHORT = {"/moon", "/mercury", "/help", "/doomsday", "/weathernow", "/test", "/test2", "/test3"}
+
+
 async def _help(ctx: Context) -> str | None:
-    return "📋 Команды:\n\t🏓 /ping - проверка\n\t🏓 " \
-    "/pingn - проверка с именами узлов\n\t🌤 " \
-    "/weather <город> - погода\n\t🚗 " \
-    "/traffic - пробки в Омске\n\t💱 " \
-    "/rate - курсы валют ЦБ РФ\n\t🆕 " \
-    "/ver - свежие версии MeshCore\n\t🌔 " \
-    "/help - справка\n\t🌤 " \
-    "/weather2 <город> - погода 2"    
-#    "/moon - фаза Луны\n\t☿ " \
-#    "/mercury - ретрограда Меркурия\n\t❓ "
+    query = ctx.args.strip()
+    if not query:
+        items = " ".join(f"{info['icon']}{name}" for name, info in HELP_INFO.items()
+                          if name not in _HELP_SKIP_SHORT)
+        return "Commands: " + items + "\n/help COMMAND - подробнее"
+
+    name = query.split()[0].lower()
+    if not name.startswith("/"):
+        name = "/" + name
+    name = _HELP_ALIASES.get(name, name)
+
+    info = HELP_INFO.get(name)
+    if info is None:
+        return f"❓ Команда «{query}» не найдена. /help - список всех команд."
+    return info["long"]
+
+
+async def _helpex(ctx: Context) -> str | None:
+    return "\n".join(info["long"] for info in HELP_INFO.values())
 
 
 async def _traffic(ctx: Context) -> str | None:
@@ -181,6 +276,7 @@ COMMANDS: dict[str, Callable[..., Coroutine]] = {
     "/ping": _ping,
     "/pingn": _pingn,
     "/help": _help,
+    "/helpex": _helpex,
     "/weather": _weather,
     "/weathernow": _weathernow,
     "/traffic": _traffic,
