@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Coroutine
 
 from .currency import get_rates
+from .doomsday import get_doomsday
 from .mercury import get_mercury
 from .moon import OMSK_LAT, OMSK_LON, get_moon
 from .traffic import get_traffic_omsk
@@ -115,6 +116,10 @@ async def _mercury(ctx: Context) -> str | None:
     )
 
 
+async def _doomsday(ctx: Context) -> str | None:
+    return await get_doomsday()
+
+
 async def _weather(ctx: Context) -> str | None:
     if not ctx.args:
         return "❓ Использование: /weather <город>  например: /weather Москва"
@@ -189,6 +194,7 @@ COMMANDS: dict[str, Callable[..., Coroutine]] = {
     "/mercury": _mercury,
     "/merc": _mercury,
     "/retro": _mercury,
+    "/doomsday": _doomsday,
     "/test": _test,
     "/test2": _test2,
     "/test3": _test3,
