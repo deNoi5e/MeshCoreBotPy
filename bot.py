@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import asyncio
+import glob
 import io
 import logging
 import os
@@ -28,6 +29,21 @@ if isinstance(sys.stdout, io.TextIOWrapper):
     sys.stdout.reconfigure(encoding='utf-8', errors='backslashreplace')
 
 log_filename = datetime.now().strftime('bot_%Y.%m.%d_%H-%M-%S.log')
+
+LOG_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+
+
+def cleanup_old_logs(max_age_seconds: int = LOG_MAX_AGE_SECONDS) -> None:
+    now = time.time()
+    for path in glob.glob('bot_*.log'):
+        try:
+            if now - os.path.getmtime(path) > max_age_seconds:
+                os.remove(path)
+        except OSError:
+            pass
+
+
+cleanup_old_logs()
 
 logging.basicConfig(
     level=logging.INFO,
