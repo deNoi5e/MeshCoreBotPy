@@ -117,17 +117,17 @@ def _norm360(x: float) -> float:
 def _phase_name(illumination: float, waxing: bool) -> tuple[str, str]:
     """Эмодзи и название фазы по освещённости и направлению роста."""
     if illumination < _SYZYGY_WINDOW:
-        return _MOON_NEW, "Новолуние"
+        return _MOON_NEW, "Ново"
     if illumination > 1 - _SYZYGY_WINDOW:
-        return _MOON_FULL, "Полнолуние"
+        return _MOON_FULL, "Полн"
     if abs(illumination - 0.5) < _QUARTER_WINDOW:
-        return ((_MOON_FIRST_QUARTER, "Первая четверть") if waxing
-                else (_MOON_LAST_QUARTER, "Последняя четверть"))
+        return ((_MOON_FIRST_QUARTER, "Перв четв") if waxing
+                else (_MOON_LAST_QUARTER, "Посл четв"))
     if waxing:
-        return ((_MOON_WAXING_GIBBOUS, "Растущая Луна") if illumination > 0.5
+        return ((_MOON_WAXING_GIBBOUS, "Раст") if illumination > 0.5
                 else (_MOON_WAXING_CRESCENT, "Растущий серп"))
-    return ((_MOON_WANING_GIBBOUS, "Убывающая Луна") if illumination > 0.5
-            else (_MOON_WANING_CRESCENT, "Убывающий серп"))
+    return ((_MOON_WANING_GIBBOUS, "Убыв Луна") if illumination > 0.5
+            else (_MOON_WANING_CRESCENT, "Убыв серп"))
 
 
 def _jd(dt: datetime) -> float:
@@ -444,10 +444,9 @@ def format_moon(info: MoonInfo) -> str:
     setting = info.set.strftime("%H:%M") if info.set else "—"
     return "\n".join((
         f"{info.emoji} {info.name}, {round(info.illumination * 100)}%",
-        f"Возраст {info.age_days:.1f} сут",
-        f"Восход {rise}, заход {setting}",
-        f"{_MOON_FULL} Полнолуние {info.next_full.strftime('%d.%m %H:%M')}",
-        f"{_MOON_NEW} Новолуние {info.next_new.strftime('%d.%m %H:%M')}",
+        f"Возраст {info.age_days:.1f} сут Восход {rise}, заход {setting}",
+        f"{_MOON_FULL} {info.next_full.strftime('%d.%m %H:%M')}",
+        f"{_MOON_NEW} {info.next_new.strftime('%d.%m %H:%M')}",
     ))
 
 
