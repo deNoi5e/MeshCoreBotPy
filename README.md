@@ -46,6 +46,7 @@ python find_device.py
 | `/help` | Список команд |
 | `/weather <город>` | Текущая погода |
 | `/weathernow` | Дневной прогноз в канал погоды |
+| `/rate` (`/kurs`) | Курсы USD/EUR/CNY к рублю по ЦБ РФ с изменением за день |
 
 ## Docker
 
