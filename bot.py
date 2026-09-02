@@ -14,6 +14,7 @@ from meshcore import MeshCore, events
 from core.commands import dispatch
 from core.moon import OMSK_LAT, OMSK_LON
 from core.msgsplit import split_msg, str_byte_len
+from core.traffic import traffic_broadcast_scheduler
 from core.weather import to_lat, weather_broadcast_scheduler
 
 load_dotenv()
@@ -62,6 +63,15 @@ async def main():
             "hour": int(os.environ.get("WEATHER_HOUR", "7")),
             "minute": int(os.environ.get("WEATHER_MINUTE", "30")),
             "timezone_offset_hours": int(os.environ.get("WEATHER_TIMEZONE_OFFSET", "6")),
+        },
+        # Не чаще раза в час — traffic_broadcast_scheduler это гарантирует
+        # сам (max(60, ...)) независимо от того, что задано в .env.
+        # TRAFFIC_INTERVAL_MINUTES=0 отключает рассылку целиком.
+        "traffic_broadcast": {
+            "channel_idx": int(os.environ.get("TRAFFIC_CHANNEL_IDX", "3")),
+            "interval_minutes": int(os.environ.get("TRAFFIC_INTERVAL_MINUTES", "60")),
+            "hour_from": int(os.environ.get("TRAFFIC_HOUR_FROM", "7")),
+            "hour_to": int(os.environ.get("TRAFFIC_HOUR_TO", "19")),
         },
         # Восход/заход Луны зависят от места, фаза — нет. Часовой пояс общий
         # с прогнозом погоды: узел стоит в одной точке.
@@ -340,6 +350,7 @@ async def main():
         await asyncio.gather(
             listen(),
             weather_broadcast_scheduler(mc, config),
+            traffic_broadcast_scheduler(mc, config),
             advert_scheduler(),
         )
     except KeyboardInterrupt:

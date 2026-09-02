@@ -1,6 +1,9 @@
+import asyncio
 import re
 import ssl
 import logging
+from datetime import datetime, timedelta
+
 import aiohttp
 import certifi
 
@@ -34,7 +37,8 @@ def _describe(score: int) -> str:
     return "стоим"
 
 
-async def get_traffic_omsk() -> str:
+async def _fetch_traffic_score() -> tuple[int, str] | str:
+    """Возвращает (score, report) при успехе или строку с текстом ошибки."""
     ssl_ctx = ssl.create_default_context(cafile=certifi.where())
     headers = {"User-Agent": "Mozilla/5.0 (compatible)"}
     try:
@@ -57,4 +61,59 @@ async def get_traffic_omsk() -> str:
     desc = _describe(score)
     word = _score_form(score)
 
-    return f"{icon} Омск: {score} {word} — {desc}"
+    return score, f"{icon} Омск: {score} {word} — {desc}"
+
+
+async def get_traffic_omsk() -> str:
+    result = await _fetch_traffic_score()
+    if isinstance(result, str):
+        return result
+    _score, report = result
+    return report
+
+
+async def _send_traffic_report(mc, channel_idx: int, hour_from: int, hour_to: int) -> None:
+    now = datetime.now()
+    if not _in_broadcast_window(now, hour_from, hour_to):
+        logger.info(f"📭 Рассылка пробок в канал {channel_idx} не отправлена: не время ({hour_from}:00–{hour_to}:00)")
+        return
+    try:
+        result = await _fetch_traffic_score()
+        if isinstance(result, str):
+            logger.error(f"📭 Рассылка пробок в канал {channel_idx} не отправлена: {result}")
+            return
+        score, report = result
+        if score == 0:
+            logger.info(f"📭 Рассылка пробок в канал {channel_idx} не отправлена: 0 баллов")
+            return
+        await mc.commands.send_chan_msg(channel_idx, report)
+        logger.info(f"📤 Пробки отправлены в канал {channel_idx}: {report}")
+    except Exception as e:
+        logger.error(f"📭 Рассылка пробок в канал {channel_idx} не отправлена: ошибка {e}")
+
+
+def _in_broadcast_window(now: datetime, hour_from: int, hour_to: int) -> bool:
+    return hour_from <= now.hour < hour_to
+
+
+async def traffic_broadcast_scheduler(mc, config: dict) -> None:
+    tb = config.get("traffic_broadcast")
+    if not tb:
+        return
+    channel_idx = tb.get("channel_idx", 3)
+    interval_minutes = tb.get("interval_minutes", 60)
+    if interval_minutes == 0:
+        logger.info("⏰ Рассылка пробок отключена (TRAFFIC_INTERVAL_MINUTES=0)")
+        return
+    interval_minutes = max(60, interval_minutes)
+    hour_from = tb.get("hour_from", 7)
+    hour_to = tb.get("hour_to", 19)
+
+    await asyncio.sleep(5.0)
+    await _send_traffic_report(mc, channel_idx, hour_from, hour_to)
+
+    while True:
+        next_run = datetime.now() + timedelta(minutes=interval_minutes)
+        logger.info(f"⏰ Следующая рассылка пробок через {interval_minutes} мин ({next_run.strftime('%Y-%m-%d %H:%M')} по местному)")
+        await asyncio.sleep(interval_minutes * 60)
+        await _send_traffic_report(mc, channel_idx, hour_from, hour_to)
