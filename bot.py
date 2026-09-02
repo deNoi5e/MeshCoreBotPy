@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 from meshcore import MeshCore, events
 
 from core.commands import dispatch
+from core.moon import OMSK_LAT, OMSK_LON
 from core.msgsplit import split_msg, str_byte_len
 from core.weather import to_lat, weather_broadcast_scheduler
 
@@ -60,6 +61,13 @@ async def main():
             "channel_idx": int(os.environ.get("WEATHER_CHANNEL_IDX", "3")),
             "hour": int(os.environ.get("WEATHER_HOUR", "7")),
             "minute": int(os.environ.get("WEATHER_MINUTE", "30")),
+            "timezone_offset_hours": int(os.environ.get("WEATHER_TIMEZONE_OFFSET", "6")),
+        },
+        # Восход/заход Луны зависят от места, фаза — нет. Часовой пояс общий
+        # с прогнозом погоды: узел стоит в одной точке.
+        "moon": {
+            "lat": float(os.environ.get("MOON_LAT", str(OMSK_LAT))),
+            "lon": float(os.environ.get("MOON_LON", str(OMSK_LON))),
             "timezone_offset_hours": int(os.environ.get("WEATHER_TIMEZONE_OFFSET", "6")),
         },
     }
