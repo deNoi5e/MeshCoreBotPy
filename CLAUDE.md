@@ -1,0 +1,97 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Что это
+
+Бот для мессенджера [MeshCore](https://github.com/meshcore-dev/MeshCore) — подключается к устройству по USB в режиме компаньона, слушает сообщения в каналах и прямые сообщения, отвечает на команды (`/ping`, `/help`, `/weather`, `/weathernow`, `/weather2`, `/traffic`, `/rate`, `/ver`).
+
+## Команды разработки
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate      # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+
+cp .env.example .env           # затем задать MESHCORE_PORT
+python bot.py                  # запуск бота
+```
+
+Автоопределение USB-порта устройства:
+```bash
+python find_device.py
+```
+
+Отладка — просмотр всех сырых событий от устройства:
+```bash
+python scripts/debug_bot.py
+```
+
+Формального test-раннера/линтера в проекте нет (без pytest/ruff в requirements.txt). `scripts/test.py` и `scripts/test_send.py` — ручные скрипты для проверки конкретного поведения через реальное/эмулируемое устройство, а не unit-тесты в обычном смысле.
+
+Docker:
+```bash
+docker-compose up -d           # порт задаётся через MESHCORE_PORT в .env
+```
+
+## Архитектура
+
+Точка входа — `bot.py`, одна функция `async def main()`. Обработка команд вынесена в `core/`.
+
+### Поток обработки сообщения
+
+1. Главный цикл в `main()` крутит `asyncio.wait(FIRST_COMPLETED)` на двух событиях: `CONTACT_MSG_RECV` (личка) и `CHANNEL_MSG_RECV` (канал).
+2. `process_message()` разбирает payload:
+   - В каналах текст приходит в виде `"Имя: /команда"` — парсится по первому `:` на `sender` и `text`.
+   - Дедупликация по ключу `"{source_key}:{sender_timestamp}:{text}"` в множестве `processed_messages` (растёт неограниченно в рамках процесса).
+   - Для личных сообщений перед фактическим ответом отправляется пустой ACK (`mc.commands.send_msg(source_key, "")`).
+3. Команда диспетчеризуется через `core/commands.py::dispatch()` → `core/commands.py::Context` собирает всё нужное состояние (текст, hops, route_data, api key, config, сам `mc`).
+4. Ответ (если не `None`) прогоняется через `to_lat()` (замена кириллических омоглифов на ASCII для экономии байт при передаче по LoRa) и режется на части `split_msg()` (`core/msgsplit.py`) по границе слов с лимитом байт (130 байт в каналах, 150 в личке — у LoRa маленький MTU).
+5. Отправка частей ответа идёт с `time.sleep(2.0)` между сообщениями (не `asyncio.sleep` — специально блокирующий, чтобы не заспамить радиоэфир).
+
+### Маршруты и хопы (`route_cache`)
+
+- Событие `RX_LOG_DATA` подписано отдельно (`on_rx_log`) и параллельно с основным циклом собирает данные о пути прохождения пакетов в `route_cache: dict[recv_time] -> {path, path_len}`, храня записи не старше 30 секунд.
+- При получении сообщения ищется запись в `route_cache`, где `abs(sender_timestamp - recv_time) <= 5` — так `/ping` получает информацию о маршруте (какие ретрансляторы участвовали, SNR/RSSI).
+- `path_len == 255` в payload означает прямую видимость (0 хопов), а не 255 хопов.
+- `pending_bot_sends: dict[timestamp] -> preview` использует ту же логику `RX_LOG_DATA` (payload_type 5), чтобы залогировать, кто из ретрансляторов услышал ответ бота.
+
+### Команды (`core/commands.py`)
+
+- `COMMANDS: dict[str, Callable]` — реестр команд, ключ — строка команды (`"/ping"` и т.п.). Чтобы добавить команду: написать `async def _foo(ctx: Context) -> str | None` и зарегистрировать в `COMMANDS`.
+- `dispatch()` возвращает `None`, если текст не начинается с `/` или команда не найдена — тогда бот молчит.
+- Хендлер может сам отправить сообщение через `ctx.mc.commands.send_chan_msg(...)` и вернуть `None` (см. `_weathernow`), либо просто вернуть текст для отправки вызывающей стороной.
+- `/test` — служебная команда, не задокументированная в README как пользовательская. Возвращает длинную строку специально для ручной проверки `split_msg()` (разбиение ответа на части под лимит байт LoRa).
+
+### Погода — три независимых источника
+
+- `core/weather.py` — OpenWeatherMap (нужен `OPENWEATHERMAP_API_KEY`), используется командами `/weather` и `/weathernow`, а также фоновым `weather_broadcast_scheduler()` (крутится параллельно с `listen()` через `asyncio.gather()` в `main()`, ждёт до заданного `WEATHER_HOUR:WEATHER_MINUTE` в часовом поясе `WEATHER_TIMEZONE_OFFSET` и шлёт прогноз в `WEATHER_CHANNEL_IDX`).
+- `core/openmeteo_omsk.py` — Open-Meteo (без ключа), используется командой `/weather2`. Через геокодер Open-Meteo резолвит произвольный город; для «Омск» использует захардкоженные координаты.
+- `core/gismeteo_omsk.py` — HTML-скрапер Гисметео (requests + BeautifulSoup), **не подключён ни к одной команде** — самостоятельный модуль, хрупкий к вёрстке сайта.
+
+### Мост с Telegram (`core/telegram_bridge.py`)
+
+- Опционален: включается, только если заданы все три `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `TELEGRAM_CHANNEL_IDX`. Схема жёстко «один чат ↔ один канал MeshCore», без whitelist пользователей внутри чата и без поддержки нескольких пар.
+- `telegram_bridge(mc, config)` — отдельная корутина, крутится через `asyncio.gather()` в `bot.py::main()` наравне с `listen()` и `weather_broadcast_scheduler()`.
+- **Telegram → MeshCore**: long polling `getUpdates` (raw HTTPS через `aiohttp`, без сторонних Telegram-библиотек — по аналогии с `core/weather.py`/`core/traffic.py`). Сообщения не из `TELEGRAM_CHAT_ID` игнорируются. Текст прогоняется через тот же `core/commands.py::dispatch()`, что и обычные сообщения бота (значит, `/ping` и другие команды, отправленные из Telegram, работают как обычно); если это не команда — пересылается как `"{sender}: {text}"`. Результат идёт через `to_lat()` + `split_msg()` и `mc.commands.send_chan_msg()` с тем же `time.sleep(2.0)` между частями, что и обычные ответы.
+- **MeshCore → Telegram**: не отдельный цикл — встроено в `process_message()` в `bot.py`: если сообщение пришло в `TELEGRAM_CHANNEL_IDX`, оно асинхронно (`asyncio.create_task`) уходит в Telegram через `send_to_telegram()`.
+- **Защита от зацикливания эха**: оба направления отправки в один и тот же MeshCore-канал (обычные ответы бота из `process_message()` и сообщения, слетающие туда из Telegram-моста) регистрируют отправленный текст в общем `config["_own_channel_echoes"]: dict[text -> send_time]` (TTL 60 c). Приходящее сообщение с текстом из этого словаря не пересылается в Telegram повторно. Это единственный канал связи состояния между `bot.py` и `core/telegram_bridge.py` — оба модуля читают/пишут в один и тот же передаваемый `config`, а не импортируют друг у друга внутреннее состояние.
+
+### Чтение чужого Telegram-канала (`core/telegram_userfeed.py`)
+
+- Отдельная фича от `core/telegram_bridge.py` — решает другую задачу: `telegram_bridge` требует, чтобы бот был участником чата (работает через Bot API), а `telegram_userfeed` читает **любой публичный канал**, куда бот не добавлен, авторизуясь как обычный Telegram-пользователь (Telethon, протокол MTProto). Только приём: в исходный канал бот не пишет.
+- Опционален: включается, только если заданы все четыре `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_SOURCE_CHANNEL`, `TELEGRAM_USERFEED_CHANNEL_IDX`.
+- `TELEGRAM_API_ID`/`TELEGRAM_API_HASH` — данные Telegram-приложения с https://my.telegram.org/apps, это **не токен бота**, а credentials для user-аккаунта.
+- Перед первым запуском `bot.py` нужно один раз выполнить `python scripts/telegram_login.py` — интерактивно запрашивает номер телефона и код подтверждения, сохраняет сессию в файл `TELEGRAM_USER_SESSION` (по умолчанию `telegram_user.session`). Без этого файла `telegram_userfeed()` не сможет авторизоваться (интерактивный ввод внутри самого бота не предусмотрен — несовместимо с фоновым/Docker-запуском).
+- `telegram_userfeed(mc, config)` — отдельная корутина, крутится через `asyncio.gather()` в `bot.py::main()` наравне с остальными. Подписывается на `NewMessage` в `TELEGRAM_SOURCE_CHANNEL` через `client.on(...)`, а не polling — Telethon сам держит сессию через `run_until_disconnected()`.
+- Сообщения пересылаются как есть (`"{sender}: {text}"`), **не** прогоняются через `dispatch()` — это чужой контент, а не команды пользователя боту.
+- Типовое применение — оповещения МЧС Омской области об угрозе БПЛА: `TELEGRAM_SOURCE_CHANNEL=@mchs_omsk`, `TELEGRAM_USERFEED_CHANNEL_IDX` указывает на отдельный канал тревог (не общий инфо-канал), чтобы люди могли подписаться конкретно на тревожные оповещения. У МЧС/РСЧС нет официального API для этих оповещений — их публичный Telegram-канал единственный практичный программный источник.
+
+### Прочее
+
+- `core/traffic.py` — команда `/traffic`, скрапит балл пробок Омска с ngs55.ru регуляркой по HTML.
+- `core/currency.py` — команда `/rate` (алиас `/kurs`), курсы USD/EUR/CNY к рублю из официального XML ЦБ РФ (`XML_daily.asp`, windows-1251). Делает два запроса: текущий курс и курс за день до его даты (ЦБ на дату без публикации отдаёт ближайшую предыдущую) — из разницы считается изменение. Результат кэшируется на 30 минут, т.к. ЦБ публикует курс раз в рабочий день.
+- `core/versions.py` — команда `/ver` (алиасы `/version`, `/versions`): последние **опубликованные в интернете** версии, а не то, что залито в устройство бота. Прошивка — релизы GitHub `meshcore-dev/MeshCore` (репозиторий переехал с `ripplebiz/MeshCore`); теги ролей узла (`companion-v`, `repeater-v`, `room-server-v`) выпускаются отдельно, поэтому берётся свежий релиз по каждому префиксу и, если версии совпадают (обычный случай), выводится одной строкой. Приложение — версия официального MeshCore Liam Cottle из lookup-API App Store (`itunes.apple.com/lookup?bundleId=com.liamcottle.meshcore.ios`): JSON без ключа и без скрапинга, iOS и Android нумеруются синхронно. Кэш 6 часов — у GitHub API без токена лимит 60 запросов в час на IP.
+- `scripts/examples.py` — устаревший пример расширения бота, ссылается на класс `MeshCoreBot`, которого в текущей архитектуре (функциональной, через `dispatch`) больше не существует. Не использовать как образец для новых команд — ориентироваться на `core/commands.py`.
+- `scripts/check_flood_scope.py`, `scripts/probe_jams.py`, `scripts/probe_traffic.py`, `scripts/check_methods.py` — разовые скрипты для проб API устройства/сторонних сайтов.
+- Все сетевые запросы к внешним HTTPS-сервисам используют `ssl.create_default_context(cafile=certifi.where())` явно — на некоторых платформах системные корневые сертификаты недоступны без этого.

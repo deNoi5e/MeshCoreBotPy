@@ -6,6 +6,7 @@ from typing import Any, Callable, Coroutine
 
 from .currency import get_rates
 from .traffic import get_traffic_omsk
+from .versions import get_latest_versions
 from .weather import get_daily_forecast, get_weather, to_lat
 from .openmeteo_omsk import get_weather as openmeteo_get_weather
 
@@ -72,7 +73,7 @@ async def _pingn(ctx: Context) -> str | None:
 
 
 async def _help(ctx: Context) -> str | None:
-    return "📋 Команды:\n\t🏓 /ping - проверка\n\t🏓 /pingn - проверка с именами узлов\n\t🌤 /weather <город> - погода\n\t🚗 /traffic - пробки в Омске\n\t💱 /rate - курсы валют ЦБ РФ\n\t❓ /help - справка\n\t🌤 /weather2 <город> - погода 2"
+    return "📋 Команды:\n\t🏓 /ping - проверка\n\t🏓 /pingn - проверка с именами узлов\n\t🌤 /weather <город> - погода\n\t🚗 /traffic - пробки в Омске\n\t💱 /rate - курсы валют ЦБ РФ\n\t🆕 /ver - свежие версии MeshCore\n\t❓ /help - справка\n\t🌤 /weather2 <город> - погода 2"
 
 
 async def _traffic(ctx: Context) -> str | None:
@@ -81,6 +82,10 @@ async def _traffic(ctx: Context) -> str | None:
 
 async def _rate(ctx: Context) -> str | None:
     return await get_rates()
+
+
+async def _ver(ctx: Context) -> str | None:
+    return await get_latest_versions()
 
 
 async def _weather(ctx: Context) -> str | None:
@@ -149,6 +154,9 @@ COMMANDS: dict[str, Callable[..., Coroutine]] = {
     "/traffic": _traffic,
     "/rate": _rate,
     "/kurs": _rate,
+    "/ver": _ver,
+    "/version": _ver,
+    "/versions": _ver,
     "/test": _test,
     "/test2": _test2,
     "/test3": _test3,
