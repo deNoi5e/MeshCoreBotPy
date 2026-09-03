@@ -10,6 +10,7 @@ import certifi
 logger = logging.getLogger(__name__)
 
 _URL = "https://ngs55.ru/maps-traffic/"
+_STATE_FILE = "traffic_last_score.txt"
 
 _ICONS = {"green": "🟢", "yellow": "🟡", "orange": "🟠", "red": "🔴"}
 
@@ -76,6 +77,29 @@ def _in_broadcast_window(now: datetime, hour_from: int, hour_to: int) -> bool:
     return hour_from <= now.hour < hour_to
 
 
+def _load_last_score() -> int | None:
+    try:
+        with open(_STATE_FILE, "r", encoding="utf-8") as f:
+            score = int(f.read().strip())
+        logger.info(f"💾 Загружено последнее известное значение пробок из {_STATE_FILE}: {score}")
+        return score
+    except FileNotFoundError:
+        logger.info(f"💾 Файл {_STATE_FILE} не найден, последнее значение пробок неизвестно")
+        return None
+    except Exception as e:
+        logger.warning(f"💾 Не удалось прочитать {_STATE_FILE}: {e}")
+        return None
+
+
+def _save_last_score(score: int) -> None:
+    try:
+        with open(_STATE_FILE, "w", encoding="utf-8") as f:
+            f.write(str(score))
+        logger.info(f"💾 Сохранено последнее значение пробок в {_STATE_FILE}: {score}")
+    except Exception as e:
+        logger.warning(f"💾 Не удалось сохранить {_STATE_FILE}: {e}")
+
+
 async def _check_traffic_change(mc, channel_idx: int, hour_from: int, hour_to: int, last_score: int | None) -> int | None:
     """Опрашивает балл пробок и при изменении шлёт отчёт в канал (только внутри окна часов).
     Возвращает актуальный последний известный балл (или last_score без изменений при ошибке)."""
@@ -86,7 +110,10 @@ async def _check_traffic_change(mc, channel_idx: int, hour_from: int, hour_to: i
 
     score, report = result
     if score == last_score:
+        logger.info(f"📭 Пробки не изменились: {score}")
         return last_score
+
+    _save_last_score(score)
 
     if not _in_broadcast_window(datetime.now(), hour_from, hour_to):
         logger.info(f"📭 Пробки изменились ({last_score} → {score}), но не время ({hour_from}:00–{hour_to}:00) — рассылка в канал {channel_idx} пропущена")
@@ -113,8 +140,10 @@ async def traffic_broadcast_scheduler(mc, config: dict) -> None:
     hour_from = tb.get("hour_from", 7)
     hour_to = tb.get("hour_to", 19)
 
+    last_score = _load_last_score()
+
     await asyncio.sleep(5.0)
-    last_score = await _check_traffic_change(mc, channel_idx, hour_from, hour_to, None)
+    last_score = await _check_traffic_change(mc, channel_idx, hour_from, hour_to, last_score)
 
     while True:
         next_run = datetime.now() + timedelta(minutes=interval_minutes)
