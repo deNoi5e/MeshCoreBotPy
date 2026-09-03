@@ -80,9 +80,10 @@ async def main():
             "minute": int(os.environ.get("WEATHER_MINUTE", "30")),
             "timezone_offset_hours": int(os.environ.get("WEATHER_TIMEZONE_OFFSET", "6")),
         },
-        # Не чаще раза в час — traffic_broadcast_scheduler это гарантирует
-        # сам (max(60, ...)) независимо от того, что задано в .env.
-        # TRAFFIC_INTERVAL_MINUTES=0 отключает рассылку целиком.
+        # Проверка балла пробок с интервалом (не чаще раза в 5 минут —
+        # traffic_broadcast_scheduler это гарантирует сам, max(5, ...)),
+        # в канал уходит только при изменении значения. TRAFFIC_INTERVAL_MINUTES=0
+        # отключает проверку целиком.
         "traffic_broadcast": {
             "channel_idx": int(os.environ.get("TRAFFIC_CHANNEL_IDX", "3")),
             "interval_minutes": int(os.environ.get("TRAFFIC_INTERVAL_MINUTES", "60")),

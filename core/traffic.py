@@ -72,28 +72,32 @@ async def get_traffic_omsk() -> str:
     return report
 
 
-async def _send_traffic_report(mc, channel_idx: int, hour_from: int, hour_to: int) -> None:
-    now = datetime.now()
-    if not _in_broadcast_window(now, hour_from, hour_to):
-        logger.info(f"📭 Рассылка пробок в канал {channel_idx} не отправлена: не время ({hour_from}:00–{hour_to}:00)")
-        return
-    try:
-        result = await _fetch_traffic_score()
-        if isinstance(result, str):
-            logger.error(f"📭 Рассылка пробок в канал {channel_idx} не отправлена: {result}")
-            return
-        score, report = result
-        if score == 0:
-            logger.info(f"📭 Рассылка пробок в канал {channel_idx} не отправлена: 0 баллов")
-            return
-        await mc.commands.send_chan_msg(channel_idx, report)
-        logger.info(f"📤 Пробки отправлены в канал {channel_idx}: {report}")
-    except Exception as e:
-        logger.error(f"📭 Рассылка пробок в канал {channel_idx} не отправлена: ошибка {e}")
-
-
 def _in_broadcast_window(now: datetime, hour_from: int, hour_to: int) -> bool:
     return hour_from <= now.hour < hour_to
+
+
+async def _check_traffic_change(mc, channel_idx: int, hour_from: int, hour_to: int, last_score: int | None) -> int | None:
+    """Опрашивает балл пробок и при изменении шлёт отчёт в канал (только внутри окна часов).
+    Возвращает актуальный последний известный балл (или last_score без изменений при ошибке)."""
+    result = await _fetch_traffic_score()
+    if isinstance(result, str):
+        logger.error(f"📭 Пробки не проверены: {result}")
+        return last_score
+
+    score, report = result
+    if score == last_score:
+        return last_score
+
+    if not _in_broadcast_window(datetime.now(), hour_from, hour_to):
+        logger.info(f"📭 Пробки изменились ({last_score} → {score}), но не время ({hour_from}:00–{hour_to}:00) — рассылка в канал {channel_idx} пропущена")
+        return score
+
+    try:
+        await mc.commands.send_chan_msg(channel_idx, report)
+        logger.info(f"📤 Пробки изменились ({last_score} → {score}), отправлено в канал {channel_idx}: {report}")
+    except Exception as e:
+        logger.error(f"📭 Рассылка пробок в канал {channel_idx} не отправлена: ошибка {e}")
+    return score
 
 
 async def traffic_broadcast_scheduler(mc, config: dict) -> None:
@@ -103,17 +107,17 @@ async def traffic_broadcast_scheduler(mc, config: dict) -> None:
     channel_idx = tb.get("channel_idx", 3)
     interval_minutes = tb.get("interval_minutes", 60)
     if interval_minutes == 0:
-        logger.info("⏰ Рассылка пробок отключена (TRAFFIC_INTERVAL_MINUTES=0)")
+        logger.info("⏰ Проверка пробок отключена (TRAFFIC_INTERVAL_MINUTES=0)")
         return
-    interval_minutes = max(60, interval_minutes)
+    interval_minutes = max(5, interval_minutes)
     hour_from = tb.get("hour_from", 7)
     hour_to = tb.get("hour_to", 19)
 
     await asyncio.sleep(5.0)
-    await _send_traffic_report(mc, channel_idx, hour_from, hour_to)
+    last_score = await _check_traffic_change(mc, channel_idx, hour_from, hour_to, None)
 
     while True:
         next_run = datetime.now() + timedelta(minutes=interval_minutes)
-        logger.info(f"⏰ Следующая рассылка пробок через {interval_minutes} мин ({next_run.strftime('%Y-%m-%d %H:%M')} по местному)")
+        logger.info(f"⏰ Следующая проверка пробок через {interval_minutes} мин ({next_run.strftime('%Y-%m-%d %H:%M')} по местному)")
         await asyncio.sleep(interval_minutes * 60)
-        await _send_traffic_report(mc, channel_idx, hour_from, hour_to)
+        last_score = await _check_traffic_change(mc, channel_idx, hour_from, hour_to, last_score)
