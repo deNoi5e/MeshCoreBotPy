@@ -8,6 +8,7 @@ from .currency import get_rates
 from .doomsday import get_doomsday
 from .mercury import get_mercury
 from .moon import OMSK_LAT, OMSK_LON, get_moon
+from .sun import get_sun
 from .traffic import get_traffic_omsk
 from .versions import get_latest_versions
 from .weather import get_daily_forecast, get_weather, to_lat
@@ -118,6 +119,10 @@ HELP_INFO: dict[str, dict[str, str]] = {
         "icon": "☿",
         "long": "☿ /mercury (/merc, /retro) - идёт ли ретро Меркурия и когда ближайшая.",
     },
+    "/sun": {
+        "icon": "☀",
+        "long": "☀ /sun - восход/заход Солнца и длина дня сегодня.",
+    },
     "/help": {
         "icon": "❓",
         "long": "❓ /help [команда] - список команд или справка по одной.",
@@ -158,7 +163,7 @@ _HELP_ALIASES: dict[str, str] = {
 # Команды, не показываемые в кратком "/help" (не влезают в лимит одного
 # LoRa-сообщения или служебные), но доступные через "/help <команда>"
 # и полностью - через "/helpex".
-_HELP_SKIP_SHORT = {"/moon", "/mercury", "/help", "/doomsday", "/weathernow", "/test", "/test2", "/test3"}
+_HELP_SKIP_SHORT = {"/moon", "/mercury", "/sun", "/help", "/doomsday", "/weathernow", "/test", "/test2", "/test3"}
 
 
 async def _help(ctx: Context) -> str | None:
@@ -208,6 +213,15 @@ async def _mercury(ctx: Context) -> str | None:
     mercury = ctx.config.get("mercury", {})
     return await get_mercury(
         tz_offset=mercury.get("timezone_offset_hours", 6.0),
+    )
+
+
+async def _sun(ctx: Context) -> str | None:
+    moon = ctx.config.get("moon", {})
+    return await get_sun(
+        lat=moon.get("lat", OMSK_LAT),
+        lon=moon.get("lon", OMSK_LON),
+        tz_offset=moon.get("timezone_offset_hours", 6.0),
     )
 
 
@@ -290,6 +304,7 @@ COMMANDS: dict[str, Callable[..., Coroutine]] = {
     "/mercury": _mercury,
     "/merc": _mercury,
     "/retro": _mercury,
+    "/sun": _sun,
     "/doomsday": _doomsday,
     "/test": _test,
     "/test2": _test2,
