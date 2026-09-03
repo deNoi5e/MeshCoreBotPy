@@ -41,10 +41,17 @@ def _describe(score: int) -> str:
 async def _fetch_traffic_score() -> tuple[int, str] | str:
     """Возвращает (score, report) при успехе или строку с текстом ошибки."""
     ssl_ctx = ssl.create_default_context(cafile=certifi.where())
-    headers = {"User-Agent": "Mozilla/5.0 (compatible)"}
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible)",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+    }
+    # Уникальный query-параметр — чтобы CDN/прокси сайта не отдал закэшированную
+    # страницу вместо актуальной (заголовков no-cache недостаточно для чужого кэша).
+    params = {"_": str(int(datetime.now().timestamp() * 1000))}
     try:
         async with aiohttp.ClientSession(headers=headers) as session:
-            async with session.get(_URL, ssl=ssl_ctx, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            async with session.get(_URL, params=params, ssl=ssl_ctx, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 if resp.status != 200:
                     return f"❌ ngs55.ru недоступен (код {resp.status})"
                 html = await resp.text()
