@@ -329,4 +329,5 @@ mc.stop()
 ## Дополнительные ресурсы
 
 - Документация meshcore: https://pypi.org/project/meshcore
-- Исходный код: https://github.com/deeplay-io/meshcore
+- Исходный код библиотеки: https://github.com/fdlamotte/meshcore_py
+- Проект MeshCore (прошивка): https://github.com/meshcore-dev/MeshCore
