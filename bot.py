@@ -4,6 +4,7 @@ import glob
 import io
 import logging
 import os
+import platform
 import sys
 import time
 import traceback
@@ -118,7 +119,8 @@ async def main():
         advert_flood_interval_hours = 6
 
     mc = await MeshCore.create_serial(port=port)
-    #await mc.connect()
+    if platform.system() == "Linux":
+        await mc.connect()
     await mc.commands.set_flood_scope(None)
     mc.set_decrypt_channel_logs(True)
 
