@@ -59,6 +59,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Подробные логи сырых payload'ов (RX_LOG_DATA, входящие сообщения) — для отладки
+# маршрутов. Шумные: RX_LOG_DATA приходит на каждый услышанный пакет.
+LOG_VERBOSE = os.environ.get("LOG_VERBOSE", "0").strip().lower() in ("1", "true", "yes", "on")
+
 
 def test_split():
     msg = "😀 😀 😀 test 1 test2 test3 testttt\ntt\ntt\n"
@@ -268,7 +272,8 @@ async def main():
                 return
             rx_log = event.payload
 
-            logger.info(f"  ----- rx_log payload = {rx_log}")
+            if LOG_VERBOSE:
+                logger.info(f"  ----- rx_log payload = {rx_log}")
 
             payload_type = rx_log.get('payload_type')
             sender_timestamp = rx_log.get('sender_timestamp')
@@ -299,12 +304,14 @@ async def main():
                     'path_len': path_len,
                     'stored_at': current_time,
                 }
-                logger.info(f"   🔍 RX_LOG сохранена по msg_hash={msg_hash}: path={path}, path_len={path_len}")
+                if LOG_VERBOSE:
+                    logger.info(f"   🔍 RX_LOG сохранена по msg_hash={msg_hash}: path={path}, path_len={path_len}")
                 for k in [k for k, v in route_by_hash.items() if current_time - v['stored_at'] > 30]:
                     del route_by_hash[k]
             if recv_time and path:
                 route_cache[recv_time] = {'path': path, 'path_len': path_len}
-                logger.info(f"   🔍 RX_LOG сохранена: recv_time={recv_time}, path={path}, path_len={path_len}")
+                if LOG_VERBOSE:
+                    logger.info(f"   🔍 RX_LOG сохранена: recv_time={recv_time}, path={path}, path_len={path_len}")
                 for k in [k for k in route_cache if current_time - k > 30]:
                     del route_cache[k]
 
@@ -312,7 +319,8 @@ async def main():
 
         async def process_message(payload, is_channel=False, route_data=None):
 
-            #logger.info(f"  ----- payload = {payload}")
+            if LOG_VERBOSE:
+                logger.info(f"  ----- payload = {payload}")
             sender = ""
 
             weather_channel_idx = config.get("weather_broadcast", {}).get("channel_idx", 3)
