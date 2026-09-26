@@ -11,7 +11,7 @@ import traceback
 from datetime import datetime
 
 from dotenv import load_dotenv
-from meshcore import MeshCore, events
+from meshcore import MeshCore, SerialConnection, events
 
 from core.commands import dispatch
 from core.moon import OMSK_LAT, OMSK_LON
@@ -149,7 +149,32 @@ def _version_interval_seconds(key: str) -> int:
     return seconds
 
 
-async def main():
+# Переподключение при потере COM-порта: столько попыток подряд с таким
+# интервалом, после чего бот останавливается. Умолчания для одноимённых env.
+RECONNECT_ATTEMPTS_DEFAULT = 10
+RECONNECT_DELAY_SECONDS_DEFAULT = 15
+
+
+def _positive_int_env(name: str, default: int) -> int:
+    """Целое >= 1 из env; нечитаемое или меньше 1 — умолчание с предупреждением."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw.strip())
+        if value < 1:
+            raise ValueError
+    except ValueError:
+        logger.warning(f"⚠️  {name}={raw!r} некорректно (ожидается целое >= 1), использую {default}")
+        return default
+    return value
+
+
+class DeviceDisconnected(Exception):
+    """Связь с устройством по COM-порту потеряна посреди работы бота."""
+
+
+def load_settings():
     port = os.environ["MESHCORE_PORT"]
     weather_api_key = os.environ.get("OPENWEATHERMAP_API_KEY", "")
     config = {
@@ -211,9 +236,74 @@ async def main():
         )
         advert_flood_interval_hours = 6
 
-    mc = await MeshCore.create_serial(port=port)
+    config["reconnect"] = {
+        "attempts": _positive_int_env("RECONNECT_ATTEMPTS", RECONNECT_ATTEMPTS_DEFAULT),
+        "delay_seconds": _positive_int_env("RECONNECT_DELAY_SECONDS", RECONNECT_DELAY_SECONDS_DEFAULT),
+    }
+    logger.info(
+        f"🔁 Переподключение при обрыве {port}: до {config['reconnect']['attempts']} попыток "
+        f"с интервалом {config['reconnect']['delay_seconds']} с "
+        f"(RECONNECT_ATTEMPTS, RECONNECT_DELAY_SECONDS)"
+    )
+
+    return port, config, advert_interval_minutes, advert_flood_interval_hours
+
+
+async def open_device(port: str) -> MeshCore:
+    # То же, что MeshCore.create_serial(), но без утечки при неудаче: connect()
+    # запускает задачу диспетчера событий до открытия порта и, если открытие
+    # бросает исключение (порта нет в системе), её не останавливает — а объект
+    # MeshCore create_serial() нам уже не вернёт. Задача висит, пока сборщик
+    # мусора не удалит её с «Task was destroyed but it is pending!».
+    mc = MeshCore(SerialConnection(port, 115200, cx_dly=0.1))
+    try:
+        if await mc.connect() is None:
+            raise ConnectionError("устройство не ответило на APP_START")
+    except BaseException:
+        try:
+            await mc.disconnect()
+            await mc.connection_manager.connection.disconnect()
+        except Exception as e:
+            logger.warning(f"⚠️  Ошибка при освобождении порта после неудачного подключения: {e!r}")
+        raise
     if platform.system() == "Linux":
         await mc.connect()
+    return mc
+
+
+async def close_device(mc: MeshCore) -> None:
+    try:
+        await mc.stop_auto_message_fetching()
+    except Exception as e:
+        logger.warning(f"⚠️  stop_auto_message_fetching при отключении: {e!r}")
+    try:
+        await mc.disconnect()
+        # После обрыва ConnectionManager уже считает себя отключённым и сам порт
+        # не закрывает — закрываем транспорт напрямую, чтобы следующая попытка
+        # не упёрлась в занятый COM-порт.
+        await mc.connection_manager.connection.disconnect()
+    except Exception as e:
+        logger.warning(f"⚠️  Ошибка при отключении от устройства: {e!r}")
+    logger.info("👋 Отключено от устройства")
+
+
+async def run_bot(mc: MeshCore, port: str, config: dict,
+                  advert_interval_minutes: int, advert_flood_interval_hours: int):
+    """Одна сессия работы с устройством: от инициализации до обрыва связи.
+
+    Бросает DeviceDisconnected, если COM-порт отвалился, — переподключением
+    занимается main().
+    """
+    connection_lost = asyncio.Event()
+    disconnect_reason: dict = {}
+
+    def on_disconnected(event):
+        disconnect_reason.update(event.payload or {})
+        connection_lost.set()
+
+    # Библиотека шлёт DISCONNECTED из connection_lost() последовательного порта
+    # (выдернули USB, устройство перезагрузилось) и при ошибке записи в порт.
+    mc.subscribe(events.EventType.DISCONNECTED, on_disconnected)
 
     # DEVICE_QUERY с версией 3 переключает прошивку на CHANNEL_MSG_RECV_V3 — только
     # в нём библиотека отдаёт txt_hash для точного поиска маршрута. Прошивка держит
@@ -389,7 +479,7 @@ async def main():
                 text,
                 hops=hops,
                 route_data=route_data,
-                weather_api_key=weather_api_key,
+                weather_api_key=config["openweathermap_api_key"],
                 config=config,
                 mc=mc,
                 sender_key="" if is_channel else source_key,
@@ -475,26 +565,89 @@ async def main():
                     logger.error(f"Ошибка обработки события: {e}")
                     traceback.print_exc()
 
+    workers = asyncio.gather(
+        listen(),
+        weather_broadcast_scheduler(mc, config),
+        traffic_broadcast_scheduler(mc, config),
+        versions_broadcast_scheduler(mc, config),
+        advert_scheduler(),
+    )
+    lost_wait = asyncio.create_task(connection_lost.wait())
     try:
-        await asyncio.gather(
-            listen(),
-            weather_broadcast_scheduler(mc, config),
-            traffic_broadcast_scheduler(mc, config),
-            versions_broadcast_scheduler(mc, config),
-            advert_scheduler(),
-        )
-    except KeyboardInterrupt:
-        logger.info("\n" + "=" * 50)
-        logger.info("🛑 Бот остановлен пользователем")
-        logger.info("=" * 50)
-    except Exception as e:
-        logger.error(f"Ошибка в listen(): {e}")
+        await asyncio.wait({workers, lost_wait}, return_when=asyncio.FIRST_COMPLETED)
     finally:
-        await mc.stop_auto_message_fetching()
-        await mc.disconnect()
-        logger.info("👋 Отключено от устройства")
+        # И при обрыве связи, и при Ctrl+C: все корутины держат старый `mc`,
+        # после переподключения их запускает заново уже новая сессия.
+        lost_wait.cancel()
+        workers.cancel()
+        try:
+            await workers
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            if not (connection_lost.is_set() or not mc.is_connected):
+                logger.error(f"Ошибка в listen(): {e!r}")
+                traceback.print_exc()
+
+    if connection_lost.is_set() or not mc.is_connected:
+        raise DeviceDisconnected(disconnect_reason.get("reason", "unknown"))
+
+
+async def main():
+    port, config, advert_interval_minutes, advert_flood_interval_hours = load_settings()
+    reconnect_attempts = config["reconnect"]["attempts"]
+    reconnect_delay_seconds = config["reconnect"]["delay_seconds"]
+
+    failed_attempts = 0
+    while True:
+        try:
+            mc = await open_device(port)
+        except Exception as e:
+            failed_attempts += 1
+            logger.error(
+                f"❌ Не удалось подключиться к {port}: {e!r} "
+                f"(попытка {failed_attempts}/{reconnect_attempts})"
+            )
+            if failed_attempts >= reconnect_attempts:
+                logger.error("=" * 50)
+                logger.error(
+                    f"🛑 Устройство на {port} недоступно после {reconnect_attempts} попыток — бот остановлен"
+                )
+                logger.error("=" * 50)
+                sys.exit(1)
+            logger.info(f"⏳ Следующая попытка подключения через {reconnect_delay_seconds} с")
+            await asyncio.sleep(reconnect_delay_seconds)
+            continue
+
+        if failed_attempts:
+            logger.info(f"✅ Переподключение к {port} удалось с попытки {failed_attempts + 1}")
+        failed_attempts = 0
+
+        try:
+            await run_bot(mc, port, config, advert_interval_minutes, advert_flood_interval_hours)
+            return
+        except DeviceDisconnected as e:
+            logger.error("=" * 50)
+            logger.error(
+                f"🔌 Связь с устройством на {port} потеряна (причина: {e}) — "
+                f"перезапуск через {reconnect_delay_seconds} с, "
+                f"до {reconnect_attempts} попыток"
+            )
+            logger.error("=" * 50)
+        except asyncio.CancelledError:
+            logger.info("\n" + "=" * 50)
+            logger.info("🛑 Бот остановлен пользователем")
+            logger.info("=" * 50)
+            raise
+        finally:
+            await close_device(mc)
+
+        await asyncio.sleep(reconnect_delay_seconds)
 
 
 #test_split()
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
