@@ -286,12 +286,12 @@ async def main():
                     'path_len': path_len,
                     'stored_at': current_time,
                 }
-                logger.info(f"   🔍 RX_LOG сохранена по msg_hash={msg_hash}: path={path}, path_len={path_len}")
+                #logger.info(f"   🔍 RX_LOG сохранена по msg_hash={msg_hash}: path={path}, path_len={path_len}")
                 for k in [k for k, v in route_by_hash.items() if current_time - v['stored_at'] > 30]:
                     del route_by_hash[k]
             if recv_time and path:
                 route_cache[recv_time] = {'path': path, 'path_len': path_len}
-                logger.info(f"   🔍 RX_LOG сохранена: recv_time={recv_time}, path={path}, path_len={path_len}")
+                #logger.info(f"   🔍 RX_LOG сохранена: recv_time={recv_time}, path={path}, path_len={path_len}")
                 for k in [k for k in route_cache if current_time - k > 30]:
                     del route_cache[k]
 
@@ -299,7 +299,7 @@ async def main():
 
         async def process_message(payload, is_channel=False, route_data=None):
 
-            logger.info(f"  ----- payload = {payload}")
+            #logger.info(f"  ----- payload = {payload}")
             sender = ""
 
             weather_channel_idx = config.get("weather_broadcast", {}).get("channel_idx", 3)
