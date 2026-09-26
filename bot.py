@@ -458,7 +458,11 @@ async def run_bot(mc: MeshCore, port: str, config: dict,
         logger.info("🤖 Бот готов! Ожидаю входящие сообщения...\n")
 
         processed_messages: set = set()
-        route_cache: dict = {}
+        # Только текстовые сообщения: иначе подбор по времени подхватывает путь
+        # чужого (или собственного, услышанного эхом) ADVERT/ACK/PATH.
+        PAYLOAD_TXT_MSG = 2
+        PAYLOAD_GRP_TXT = 5
+        route_cache: list = []
         route_by_hash: dict = {}
         pending_bot_sends: dict = {}
 
@@ -503,12 +507,25 @@ async def run_bot(mc: MeshCore, port: str, config: dict,
                     logger.info(f"   🔍 RX_LOG сохранена по msg_hash={msg_hash}: path={path}, path_len={path_len}")
                 for k in [k for k, v in route_by_hash.items() if current_time - v['stored_at'] > 30]:
                     del route_by_hash[k]
-            if recv_time and path:
-                route_cache[recv_time] = {'path': path, 'path_len': path_len}
+            if recv_time and path and payload_type in (PAYLOAD_TXT_MSG, PAYLOAD_GRP_TXT):
+                pkt_payload = rx_log.get('pkt_payload') or b''
+                is_dm = payload_type == PAYLOAD_TXT_MSG
+                route_cache.append({
+                    'recv_time': recv_time,
+                    'payload_type': payload_type,
+                    # TEXT_MSG начинается с однобайтовых хэшей получателя и отправителя —
+                    # по ним отсеиваются чужие личные сообщения, услышанные в эфире.
+                    'dst': pkt_payload[0:1].hex() if is_dm else None,
+                    'src': pkt_payload[1:2].hex() if is_dm else None,
+                    'path': path,
+                    'path_len': path_len,
+                })
                 if LOG_VERBOSE:
-                    logger.info(f"   🔍 RX_LOG сохранена: recv_time={recv_time}, path={path}, path_len={path_len}")
-                for k in [k for k in route_cache if current_time - k > 30]:
-                    del route_cache[k]
+                    logger.info(
+                        f"   🔍 RX_LOG сохранена: recv_time={recv_time}, type={payload_type}, path={path}, path_len={path_len}"
+                        + (f", {pkt_payload[1:2].hex()}→{pkt_payload[0:1].hex()}" if is_dm else "")
+                    )
+                route_cache[:] = [r for r in route_cache if current_time - r['recv_time'] <= 30]
 
         mc.subscribe(events.EventType.RX_LOG_DATA, on_rx_log)
 
@@ -630,18 +647,27 @@ async def run_bot(mc: MeshCore, port: str, config: dict,
                                     break
                                 await asyncio.sleep(0.2)
                         if route_data is None and sender_timestamp:
-                            best_recv_time = None
-                            best_diff = None
-                            for recv_time, data in route_cache.items():
-                                diff = abs(sender_timestamp - recv_time)
-                                if diff <= 7 and (best_diff is None or diff < best_diff):
-                                    best_diff = diff
-                                    best_recv_time = recv_time
-                                    route_data = data
-                            if route_data:
-                                logger.info(f"   🔍 Маршрут найден: sender_ts={sender_timestamp}, recv_time={best_recv_time}, diff={best_diff}s")
+                            if is_channel:
+                                candidates = [r for r in route_cache if r['payload_type'] == PAYLOAD_GRP_TXT]
                             else:
-                                logger.info(f"   🔍 Маршрут не найден для sender_ts={sender_timestamp}, доступно recv_times: {list(route_cache.keys())}")
+                                src = (event.payload.get('pubkey_prefix') or '')[:2]
+                                dst = (mc.self_info.get('public_key') or '')[:2]
+                                candidates = [
+                                    r for r in route_cache
+                                    if r['payload_type'] == PAYLOAD_TXT_MSG and r['src'] == src and r['dst'] == dst
+                                ]
+                            best = min(candidates, key=lambda r: abs(sender_timestamp - r['recv_time']), default=None)
+                            if best is not None and abs(sender_timestamp - best['recv_time']) <= 7:
+                                route_data = {'path': best['path'], 'path_len': best['path_len']}
+                                logger.info(
+                                    f"   🔍 Маршрут найден: sender_ts={sender_timestamp}, recv_time={best['recv_time']}, "
+                                    f"diff={abs(sender_timestamp - best['recv_time'])}s"
+                                )
+                            else:
+                                logger.info(
+                                    f"   🔍 Маршрут не найден для sender_ts={sender_timestamp}, "
+                                    f"доступно recv_times: {[r['recv_time'] for r in candidates]}"
+                                )
                         await process_message(event.payload, is_channel=is_channel, route_data=route_data)
                 except asyncio.CancelledError:
                     pass
