@@ -255,7 +255,7 @@ async def main():
                 return
             rx_log = event.payload
 
-            #logger.info(f"  ----- rx_log payload = {rx_log}")
+            logger.info(f"  ----- rx_log payload = {rx_log}")
 
             payload_type = rx_log.get('payload_type')
             sender_timestamp = rx_log.get('sender_timestamp')
@@ -286,12 +286,12 @@ async def main():
                     'path_len': path_len,
                     'stored_at': current_time,
                 }
-                #logger.info(f"   🔍 RX_LOG сохранена по msg_hash={msg_hash}: path={path}, path_len={path_len}")
+                logger.info(f"   🔍 RX_LOG сохранена по msg_hash={msg_hash}: path={path}, path_len={path_len}")
                 for k in [k for k, v in route_by_hash.items() if current_time - v['stored_at'] > 30]:
                     del route_by_hash[k]
             if recv_time and path:
                 route_cache[recv_time] = {'path': path, 'path_len': path_len}
-                #logger.info(f"   🔍 RX_LOG сохранена: recv_time={recv_time}, path={path}, path_len={path_len}")
+                logger.info(f"   🔍 RX_LOG сохранена: recv_time={recv_time}, path={path}, path_len={path_len}")
                 for k in [k for k in route_cache if current_time - k > 30]:
                     del route_cache[k]
 

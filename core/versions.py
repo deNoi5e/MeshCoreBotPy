@@ -409,6 +409,21 @@ def _humanize_interval(seconds: int) -> str:
     return f"{seconds} с"
 
 
+def _humanize_duration(seconds: int) -> str:
+    """26243 -> `7 ч 17 мин` — произвольная (не обязательно круглая) длительность."""
+    seconds = int(seconds)
+    hours, seconds = divmod(seconds, 3600)
+    minutes, seconds = divmod(seconds, 60)
+    parts = []
+    if hours:
+        parts.append(f"{hours} ч")
+    if minutes:
+        parts.append(f"{minutes} мин")
+    if seconds or not parts:
+        parts.append(f"{seconds} с")
+    return " ".join(parts)
+
+
 def _seconds_until_hour(now: datetime, hour: int) -> float:
     """Секунды до ближайшего наступления `hour:00` (сегодня или завтра)."""
     candidate = now.replace(hour=hour, minute=0, second=0, microsecond=0)
@@ -423,11 +438,15 @@ async def _source_scheduler(mc, key: str, channel_idx: int, interval_seconds: in
 
     Спит до того, что наступит раньше: обычный интервал или ближайшее
     открытие окна (`hour_from:00`, каждые сутки). Будильник открытия окна
-    сам по себе не форсирует проверку — только когда до этого с последней
-    отправки уже прошло не меньше interval_seconds, то есть версия либо
-    подзадержалась в отложенном состоянии, либо штатная проверка давно не
-    случалась (бот долго не работал). Без этого будильника отложенная вне
-    окна версия могла бы застрять навсегда — см. комментарий выше файла.
+    сам по себе источник не опрашивает — опрос (HTTP-запрос) случается,
+    только когда до этого с последней отправки уже прошло не меньше
+    interval_seconds, то есть версия либо подзадержалась в отложенном
+    состоянии, либо штатная проверка давно не случалась (бот долго не
+    работал). Иначе будильник просто пересчитывает сон заново (`continue`)
+    без обращения к источнику — иначе источник опрашивался бы лишний раз
+    при каждом открытии окна, даже если интервал — несколько суток. Без
+    этого будильника отложенная вне окна версия могла бы застрять навсегда
+    — см. комментарий выше файла.
     """
     last_version, last_sent_at = _load_last_version(key)
 
@@ -440,11 +459,13 @@ async def _source_scheduler(mc, key: str, channel_idx: int, interval_seconds: in
     while True:
         now = datetime.now()
         window_wait = _seconds_until_hour(now, hour_from)
-        next_run = now + timedelta(seconds=min(interval_seconds, window_wait))
+        next_run = now + timedelta(seconds=interval_seconds)
+        window_note = ""
+        if not _in_broadcast_window(now, hour_from, hour_to):
+            window_note = f"; до рассылки {_humanize_duration(window_wait)}"
         logger.info(
             f"⏰ Следующая проверка версии {key} не позже {next_run.strftime('%Y-%m-%d %H:%M')} "
-            f"по местному (интервал {human}, ближайшее окно через "
-            f"{_humanize_interval(int(window_wait))})"
+            f"(интервал {human}{window_note})"
         )
 
         interval_sleep = asyncio.ensure_future(asyncio.sleep(interval_seconds))
@@ -471,6 +492,13 @@ async def _source_scheduler(mc, key: str, channel_idx: int, interval_seconds: in
             if stale:
                 force = True
                 logger.info(f"⏰ Окно версии {key} открылось, рассылка задержалась — проверяю вне очереди")
+            elif interval_sleep not in done:
+                # Разбудил только будильник окна, и рассылка не подзадержалась —
+                # источник в очередной раз опрашивать незачем, дальше подождём
+                # до штатного интервала или следующего окна. Без этого источник
+                # опрашивался бы лишний раз при каждом открытии окна (например,
+                # раз в сутки даже при интервале в несколько суток).
+                continue
 
         last_version, last_sent_at = await _check_version_change(
             mc, key, channel_idx, hour_from, hour_to, last_version, last_sent_at,

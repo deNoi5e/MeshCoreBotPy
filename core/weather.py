@@ -126,7 +126,7 @@ async def weather_broadcast_scheduler(mc, config: dict) -> None:
         if now >= target:
             target = target + timedelta(days=1)
         wait_sec = (target - now).total_seconds()
-        logger.info(f"⏰ Следующая рассылка погоды через {wait_sec/3600:.1f} ч ({target.strftime('%Y-%m-%d %H:%M')} по местному)")
+        logger.info(f"⏰ Следующая рассылка погоды через {wait_sec/3600:.1f} ч ({target.strftime('%Y-%m-%d %H:%M')})")
         await asyncio.sleep(wait_sec)
 
         if not api_key:

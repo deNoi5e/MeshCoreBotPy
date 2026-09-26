@@ -158,6 +158,6 @@ async def traffic_broadcast_scheduler(mc, config: dict) -> None:
 
     while True:
         next_run = datetime.now() + timedelta(minutes=interval_minutes)
-        logger.info(f"⏰ Следующая проверка пробок через {interval_minutes} мин ({next_run.strftime('%Y-%m-%d %H:%M')} по местному)")
+        logger.info(f"⏰ Следующая проверка пробок через {interval_minutes} мин ({next_run.strftime('%Y-%m-%d %H:%M')})")
         await asyncio.sleep(interval_minutes * 60)
         last_score = await _check_traffic_change(mc, channel_idx, hour_from, hour_to, last_score)
