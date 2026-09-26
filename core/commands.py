@@ -109,7 +109,7 @@ HELP_INFO: dict[str, dict[str, str]] = {
     },
     "/ver": {
         "icon": "🆕",
-        "long": "🆕 /ver (/version) - свежие версии прошивки MeshCore и приложения.",
+        "long": "🆕 /ver (/version) - свежие версии прошивок MeshCore, EasySkyMesh и приложений.",
     },
     "/moon": {
         "icon": "🌔",

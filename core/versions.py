@@ -9,13 +9,20 @@
     с `ripplebiz/MeshCore`, старые ссылки редиректят на него). Релизы для
     разных ролей узла выкладываются отдельными тегами вида
     `companion-v1.17.1`, `repeater-v1.17.1`, `room-server-v1.17.1`;
-  * приложение — официальный MeshCore Liam Cottle. Версия берётся из
+  * прошивка EasySkyMesh (`IoTThinks/EasySkyMesh`) — сторонняя сборка
+    MeshCore с упором на энергосбережение. Версионируется не семвером, а
+    тегами вида `PowerSaving17.1`, поэтому версия берётся из тега как есть;
+  * официальное приложение — MeshCore Liam Cottle. Версия берётся из
     lookup-API App Store (отдаёт JSON без ключа и без скрапинга). Сборки
     для iOS и Android нумеруются синхронно, поэтому одна версия описывает
-    приложение в целом.
+    приложение в целом;
+  * приложение Meshnet (`cm4ker/meshnet`) — альтернативный клиент. Все его
+    релизы помечены prerelease (`dev-0.3.0-dev.97.1`), стабильных нет
+    вовсе, а `releases/latest` из-за этого отдаёт 404 — поэтому берётся
+    просто самый свежий релиз, без фильтра по prerelease.
 
-Релизы выходят раз в недели, поэтому результат кэшируется на 6 часов —
-у GitHub API без токена лимит 60 запросов в час на IP.
+Релизы MeshCore выходят раз в недели, поэтому результат кэшируется на
+6 часов — у GitHub API без токена лимит 60 запросов в час на IP.
 """
 
 import asyncio
@@ -29,7 +36,10 @@ import certifi
 
 logger = logging.getLogger(__name__)
 
-_GITHUB_RELEASES = "https://api.github.com/repos/meshcore-dev/MeshCore/releases"
+_GITHUB_RELEASES = "https://api.github.com/repos/{repo}/releases"
+_MESHCORE_REPO = "meshcore-dev/MeshCore"
+_EASYSKYMESH_REPO = "IoTThinks/EasySkyMesh"
+_MESHNET_REPO = "cm4ker/meshnet"
 _APPSTORE_LOOKUP = "https://itunes.apple.com/lookup"
 _APP_BUNDLE_ID = "com.liamcottle.meshcore.ios"
 
@@ -65,9 +75,14 @@ def _short_date(iso: str) -> str:
         return ""
 
 
+async def _releases(repo: str, per_page: int = 30) -> list:
+    return await _fetch_json(_GITHUB_RELEASES.format(repo=repo),
+                             {"per_page": str(per_page)})
+
+
 async def _firmware_versions() -> dict[str, tuple[str, str]]:
     """Подпись роли -> (версия, дата). Релизы приходят от новых к старым."""
-    releases = await _fetch_json(_GITHUB_RELEASES, {"per_page": "30"})
+    releases = await _releases(_MESHCORE_REPO)
     found: dict[str, tuple[str, str]] = {}
     for release in releases:
         if release.get("draft") or release.get("prerelease"):
@@ -79,6 +94,40 @@ async def _firmware_versions() -> dict[str, tuple[str, str]]:
                                 _short_date(release.get("published_at", "")))
     # Порядок вывода — как в _FW_KINDS, а не как в ответе GitHub.
     return {label: found[label] for label in _FW_KINDS.values() if label in found}
+
+
+async def _latest_release(repo: str, *, allow_prerelease: bool = False) -> tuple[str, str]:
+    """Версия и дата самого свежего релиза репозитория.
+
+    Не `releases/latest`: он отдаёт 404 у репозиториев, где все релизы
+    помечены prerelease (случай `cm4ker/meshnet`).
+    """
+    for release in await _releases(repo, per_page=10):
+        if release.get("draft"):
+            continue
+        if release.get("prerelease") and not allow_prerelease:
+            continue
+        tag = release.get("tag_name", "")
+        return tag, _short_date(release.get("published_at", ""))
+    raise RuntimeError("подходящих релизов нет")
+
+
+async def _easyskymesh_version() -> tuple[str, str]:
+    # Теги вида `PowerSaving17.1` — не семвер, отдаём как есть, только
+    # разделяя слово и номер, чтобы читалось как версия.
+    tag, day = await _latest_release(_EASYSKYMESH_REPO)
+    if tag.startswith("PowerSaving"):
+        tag = f"PS {tag[len('PowerSaving'):]}"
+    return tag, day
+
+
+async def _meshnet_version() -> tuple[str, str]:
+    # Стабильных релизов у репозитория нет вовсе — все prerelease.
+    tag, day = await _latest_release(_MESHNET_REPO, allow_prerelease=True)
+    # `dev-0.3.0-dev.97.1` -> `0.3.0-dev.97.1`: префикс ветки в версии лишний.
+    if tag.startswith("dev-"):
+        tag = tag[len("dev-"):]
+    return tag, day
 
 
 async def _app_version() -> tuple[str, str]:
@@ -97,13 +146,23 @@ def _format_firmware(versions: dict[str, tuple[str, str]]) -> list[str]:
     if len(unique) == 1:
         # Обычный случай: все роли выпускаются одной версией — не дублируем.
         version, day = next(iter(versions.values()))
-        suffix = f" ({day})" if day else ""
-        return [f"📟 Прошивка {version}{suffix}"]
-    lines = ["📟 Прошивка:"]
+        suffix = f" {day}" if day else ""
+        return [f"📟 MeshCore {version}{suffix}"]
+    lines = ["📟 MeshCore:"]
     for label, (version, day) in versions.items():
-        suffix = f" ({day})" if day else ""
+        suffix = f" {day}" if day else ""
         lines.append(f"{label} {version}{suffix}")
     return lines
+
+
+def _format_one(label: str, value: tuple[str, str] | BaseException) -> tuple[str, bool]:
+    """Строка ответа для одного источника и признак успеха."""
+    if isinstance(value, BaseException):
+        logger.warning(f"versions: {label} — не получено: {value}")
+        return f"{label}: ошибка запроса", False
+    version, day = value
+    suffix = f" {day}" if day else ""
+    return f"{label} {version}{suffix}", True
 
 
 async def get_latest_versions() -> str:
@@ -112,16 +171,20 @@ async def get_latest_versions() -> str:
     if _cache and time.time() - _cache[0] < _CACHE_TTL:
         return _cache[1]
 
-    firmware, app = await asyncio.gather(
-        _firmware_versions(), _app_version(), return_exceptions=True
+    firmware, easysky, app, meshnet = await asyncio.gather(
+        _firmware_versions(), _easyskymesh_version(),
+        _app_version(), _meshnet_version(),
+        return_exceptions=True,
     )
 
-    lines = ["🆕 Последние версии:"]
+    # Без заголовка и с короткими подписями: четыре строки с датами иначе
+    # не влезают в одно сообщение (лимит 130 байт в каналах).
+    lines: list[str] = []
     complete = True
 
     if isinstance(firmware, BaseException):
         logger.warning(f"versions: прошивка не получена: {firmware}")
-        lines.append("📟 Прошивка: ошибка запроса")
+        lines.append("📟 MeshCore: ошибка запроса")
         complete = False
     else:
         fw_lines = _format_firmware(firmware)
@@ -129,17 +192,15 @@ async def get_latest_versions() -> str:
             lines.extend(fw_lines)
         else:
             logger.warning("versions: в релизах GitHub нет известных тегов прошивки")
-            lines.append("📟 Прошивка: не найдена")
+            lines.append("📟 MeshCore: не найдена")
             complete = False
 
-    if isinstance(app, BaseException):
-        logger.warning(f"versions: версия приложения не получена: {app}")
-        lines.append("📱 Приложение: ошибка запроса")
-        complete = False
-    else:
-        version, day = app
-        suffix = f" ({day})" if day else ""
-        lines.append(f"📱 Приложение {version}{suffix}")
+    for label, value in (("📟 EasySky", easysky),
+                         ("📱 App", app),
+                         ("📱 Meshnet", meshnet)):
+        line, ok = _format_one(label, value)
+        lines.append(line)
+        complete = complete and ok
 
     result = "\n".join(lines)
     if complete:
