@@ -32,10 +32,29 @@ if isinstance(sys.stdout, io.TextIOWrapper):
 
 log_filename = datetime.now().strftime('bot_%Y.%m.%d_%H-%M-%S.log')
 
-LOG_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+LOG_KEEP_DAYS_DEFAULT = 7
+
+# Сколько суток хранить bot_*.log; 0 — не удалять вовсе. Логгер ещё не
+# настроен, поэтому предупреждение о кривом значении откладываем до basicConfig.
+_log_keep_days_warning = None
+_raw_log_keep_days = os.environ.get("LOG_KEEP_DAYS", str(LOG_KEEP_DAYS_DEFAULT))
+try:
+    LOG_KEEP_DAYS = int(_raw_log_keep_days.strip())
+    if LOG_KEEP_DAYS < 0:
+        raise ValueError
+except ValueError:
+    _log_keep_days_warning = (
+        f"⚠️  LOG_KEEP_DAYS={_raw_log_keep_days!r} не разобрать "
+        f"(ожидается целое число суток >= 0), использую {LOG_KEEP_DAYS_DEFAULT}"
+    )
+    LOG_KEEP_DAYS = LOG_KEEP_DAYS_DEFAULT
+
+LOG_MAX_AGE_SECONDS = LOG_KEEP_DAYS * 24 * 60 * 60
 
 
 def cleanup_old_logs(max_age_seconds: int = LOG_MAX_AGE_SECONDS) -> None:
+    if max_age_seconds <= 0:
+        return
     now = time.time()
     for path in glob.glob('bot_*.log'):
         try:
@@ -58,6 +77,8 @@ logging.basicConfig(
     force=True
 )
 logger = logging.getLogger(__name__)
+if _log_keep_days_warning:
+    logger.warning(_log_keep_days_warning)
 
 # Подробные логи сырых payload'ов (RX_LOG_DATA, входящие сообщения) — для отладки
 # маршрутов. Шумные: RX_LOG_DATA приходит на каждый услышанный пакет.
