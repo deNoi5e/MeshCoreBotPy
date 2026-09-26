@@ -221,3 +221,4 @@ stderr.txt
 stdout.txt
 traffic_last_score.txt
 versions_last_*.txt
+contacts_backup_*.json

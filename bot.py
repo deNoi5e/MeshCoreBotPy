@@ -14,6 +14,11 @@ from dotenv import load_dotenv
 from meshcore import MeshCore, SerialConnection, events
 
 from core.commands import dispatch
+from core.contacts import (
+    contacts_cleanup_scheduler,
+    ensure_auto_add_contacts,
+    subscribe_contact_events,
+)
 from core.moon import OMSK_LAT, OMSK_LON
 from core.msgsplit import split_msg, str_byte_len
 from core.traffic import traffic_broadcast_scheduler
@@ -170,6 +175,40 @@ def _positive_int_env(name: str, default: int) -> int:
     return value
 
 
+CONTACTS_MAX_AGE_DAYS_DEFAULT = 30
+CONTACTS_CLEANUP_INTERVAL_DEFAULT = "7d"
+
+
+def _contacts_cleanup_settings() -> dict:
+    """Чистка контактов из env: возраст в сутках и интервал `30m`/`2h`/`7d`.
+
+    Ноль в любом из параметров отключает чистку; нечитаемое и отрицательное
+    значение — умолчание с предупреждением.
+    """
+    raw_age = os.environ.get("CONTACTS_MAX_AGE_DAYS", str(CONTACTS_MAX_AGE_DAYS_DEFAULT))
+    try:
+        max_age_days = int(raw_age.strip())
+        if max_age_days < 0:
+            raise ValueError
+    except ValueError:
+        logger.warning(
+            f"⚠️  CONTACTS_MAX_AGE_DAYS={raw_age!r} некорректно (ожидается целое >= 0), "
+            f"использую {CONTACTS_MAX_AGE_DAYS_DEFAULT}"
+        )
+        max_age_days = CONTACTS_MAX_AGE_DAYS_DEFAULT
+
+    raw_interval = os.environ.get("CONTACTS_CLEANUP_INTERVAL", CONTACTS_CLEANUP_INTERVAL_DEFAULT)
+    interval_seconds = _parse_interval_seconds(raw_interval)
+    if interval_seconds is None:
+        logger.warning(
+            f"⚠️  CONTACTS_CLEANUP_INTERVAL={raw_interval!r} не разобрать (ожидается 30m/2h/7d), "
+            f"использую {CONTACTS_CLEANUP_INTERVAL_DEFAULT}"
+        )
+        interval_seconds = _parse_interval_seconds(CONTACTS_CLEANUP_INTERVAL_DEFAULT)
+
+    return {"max_age_days": max_age_days, "interval_seconds": interval_seconds}
+
+
 class DeviceDisconnected(Exception):
     """Связь с устройством по COM-порту потеряна посреди работы бота."""
 
@@ -221,6 +260,9 @@ def load_settings():
                 for key in versions_sources
             },
         },
+        # Удаление с ноды контактов, которых давно не слышно: при старте
+        # сессии и затем с интервалом. Избранные не трогаются.
+        "contacts_cleanup": _contacts_cleanup_settings(),
     }
     advert_interval_minutes = int(os.environ.get("ADVERT_INTERVAL_MINUTES", "30"))
     if advert_interval_minutes <= 0:
@@ -287,6 +329,42 @@ async def close_device(mc: MeshCore) -> None:
     logger.info("👋 Отключено от устройства")
 
 
+async def sync_device_clock(mc: MeshCore) -> None:
+    """Выставляет часы ноды по компьютеру.
+
+    Нода без RTC после перезагрузки ведёт время с прошлой даты, пока его не
+    выставит приложение. По этим часам она ставит метки своим advert'ам (узлы,
+    уже слышавшие advert с более поздней меткой, отбрасывают такой как повтор)
+    и lastmod контактам. Прошивка переводит часы только вперёд — время меньше
+    текущего отвергает с ERR_CODE_ILLEGAL_ARG, так что убежавшие вперёд часы
+    отсюда не исправить.
+    """
+    try:
+        before = await mc.commands.get_time()
+        device_time = None
+        if before is not None and before.type != events.EventType.ERROR:
+            device_time = before.payload.get("time")
+        now = int(time.time())
+        result = await mc.commands.set_time(now)
+    except Exception as e:
+        logger.error(f"❌ Не удалось выставить часы ноды: {e!r}")
+        return
+
+    fmt = '%Y.%m.%d %H:%M:%S'
+    was = ""
+    if device_time is not None:
+        was = f", было {datetime.fromtimestamp(device_time).strftime(fmt)} ({device_time - now:+d} с)"
+    if result is not None and result.type != events.EventType.ERROR:
+        logger.info(f"🕐 Часы ноды выставлены по компьютеру: {datetime.fromtimestamp(now).strftime(fmt)}{was}")
+    elif device_time is not None and device_time > now:
+        logger.warning(
+            f"⚠️  Часы ноды убежали вперёд{was} — прошивка назад их не переводит, "
+            f"оставляю как есть"
+        )
+    else:
+        logger.error(f"❌ Не удалось выставить часы ноды: {result.payload if result else 'нет ответа'}{was}")
+
+
 async def run_bot(mc: MeshCore, port: str, config: dict,
                   advert_interval_minutes: int, advert_flood_interval_hours: int):
     """Одна сессия работы с устройством: от инициализации до обрыва связи.
@@ -309,14 +387,17 @@ async def run_bot(mc: MeshCore, port: str, config: dict,
     # в нём библиотека отдаёт txt_hash для точного поиска маршрута. Прошивка держит
     # эту версию в RAM до перезагрузки, поэтому объявлять её надо при каждом старте.
     device_info = await mc.commands.send_device_query()
+    max_contacts = None
     if device_info is None or device_info.type == events.EventType.ERROR:
         logger.warning(f"⚠️  DEVICE_QUERY не удался ({device_info}) — поиск маршрута по msg_hash работать не будет")
     else:
         info = device_info.payload
+        max_contacts = info.get("max_contacts")
         logger.info(
             f"📟 Устройство: {info.get('model', '?')}, прошивка {info.get('ver', '?')} "
             f"(сборка {info.get('fw_build', '?')}, протокол {info.get('fw ver', '?')})"
         )
+    await sync_device_clock(mc)
     await mc.commands.set_flood_scope(None)
     mc.set_decrypt_channel_logs(True)
 
@@ -340,9 +421,12 @@ async def run_bot(mc: MeshCore, port: str, config: dict,
     logger.info(f"📡 Подключено к {port}")
     logger.info("=" * 50 + "\n")
 
+    await ensure_auto_add_contacts(mc)
+    subscribe_contact_events(mc, max_contacts)
+
     await mc.ensure_contacts()
     mc.auto_update_contacts = True
-    logger.info(f"📇 Контактов синхронизировано: {len(mc.contacts)}")
+    logger.info(f"📇 Контактов синхронизировано: {len(mc.contacts)} из {max_contacts or '?'}")
     for contact in mc.contacts.values():
         logger.info(f"   Контакт: {contact}")
 
@@ -570,6 +654,7 @@ async def run_bot(mc: MeshCore, port: str, config: dict,
         weather_broadcast_scheduler(mc, config),
         traffic_broadcast_scheduler(mc, config),
         versions_broadcast_scheduler(mc, config),
+        contacts_cleanup_scheduler(mc, config),
         advert_scheduler(),
     )
     lost_wait = asyncio.create_task(connection_lost.wait())
