@@ -279,7 +279,19 @@ async def get_latest_versions() -> str:
 # Отличия от пробок два, оба из-за редкости события (релиз раз в недели):
 #   * интервал задаётся в часах, а не в минутах, и свой для каждого источника;
 #   * изменение, случившееся вне окна тишины, не теряется, а откладывается до
-#     ближайшего окна — файл состояния обновляется только после отправки.
+#     ближайшего окна.
+#
+# Просто «отложить до окна» недостаточно: если планировщик спит ровно
+# interval_seconds, а окно короче суток, момент проверки при каждом заходе
+# приходится на одно и то же время суток — если это время вне окна, оно
+# остаётся вне окна навсегда, и отложенная версия никогда не уйдёт (баг,
+# найденный на интервале 24ч при окне, скажем, 7–23: проверка в 2 ночи так и
+# останется проверкой в 2 ночи). Поэтому дополнительно к обычному сну есть
+# будильник на каждое открытие окна (`hour_from:00`): если с последней
+# фактической отправки прошло больше interval_seconds, он форсирует проверку
+# незамедлительно, не дожидаясь обычного таймера. Смысл при этом смещается —
+# это уже не «опрашивать источник раз в N», а «не давать окну без рассылки
+# растянуться дольше N».
 
 _STATE_FILE_TEMPLATE = "versions_last_{key}.txt"
 
@@ -288,70 +300,93 @@ def _state_file(key: str) -> str:
     return _STATE_FILE_TEMPLATE.format(key=key)
 
 
-def _load_last_version(key: str) -> str | None:
+def _load_last_version(key: str) -> tuple[str | None, datetime | None]:
+    """Версия и момент её отправки. Второй строки может не быть — файлы,
+    сохранённые до появления будильника окна, читаются как (версия, None)."""
     path = _state_file(key)
     try:
         with open(path, "r", encoding="utf-8") as f:
-            version = f.read().strip()
+            lines = f.read().splitlines()
+        version = lines[0].strip() if lines else ""
         if not version:
-            return None
+            return None, None
+        sent_at = None
+        if len(lines) > 1 and lines[1].strip():
+            try:
+                sent_at = datetime.fromisoformat(lines[1].strip())
+            except ValueError:
+                pass
         logger.info(f"💾 Загружена последняя разосланная версия {key} из {path}: {version}")
-        return version
+        return version, sent_at
     except FileNotFoundError:
         logger.info(f"💾 Файл {path} не найден, последняя версия {key} неизвестна")
-        return None
+        return None, None
     except Exception as e:
         logger.warning(f"💾 Не удалось прочитать {path}: {e}")
-        return None
+        return None, None
 
 
-def _save_last_version(key: str, version: str) -> None:
+def _save_last_version(key: str, version: str, sent_at: datetime) -> None:
     path = _state_file(key)
     try:
         with open(path, "w", encoding="utf-8") as f:
-            f.write(version)
+            f.write(f"{version}\n{sent_at.isoformat()}\n")
         logger.info(f"💾 Сохранена последняя разосланная версия {key} в {path}: {version}")
     except Exception as e:
         logger.warning(f"💾 Не удалось сохранить {path}: {e}")
 
 
 def _in_broadcast_window(now: datetime, hour_from: int, hour_to: int) -> bool:
-    return hour_from <= now.hour < hour_to
+    if hour_from <= hour_to:
+        return hour_from <= now.hour < hour_to
+    # Окно переходит через полночь (напр. 22–6 или 7–0): "с hour_from до
+    # конца суток" ИЛИ "с начала суток до hour_to".
+    return now.hour >= hour_from or now.hour < hour_to
 
 
 async def _check_version_change(mc, key: str, channel_idx: int,
                                 hour_from: int, hour_to: int,
-                                last_version: str | None) -> str | None:
+                                last_version: str | None,
+                                last_sent_at: datetime | None,
+                                *, force: bool = False) -> tuple[str | None, datetime | None]:
     """Опрашивает источник и при изменении версии шлёт сообщение в канал.
 
-    Возвращает версию, которую считаем разосланной. При ошибке запроса и при
-    попадании вне окна тишины возвращает прежнюю — тогда на следующей проверке
-    изменение будет обнаружено снова и уйдёт в канал, когда окно откроется.
+    Возвращает (версию, момент отправки), которые считаем актуальным
+    состоянием. При ошибке запроса и при попадании вне окна тишины (без
+    `force`) возвращает прежние — тогда на следующей проверке изменение
+    будет обнаружено снова и уйдёт в канал, когда окно откроется.
+
+    `force=True` (вызывается будильником открытия окна, см.
+    `versions_broadcast_scheduler()`) обходит проверку окна: используется,
+    когда рассылка и так уже подзадержалась дольше интервала проверки, и
+    ждать обычного планового захода незачем.
     """
     label, _fetch = SOURCES[key]
     try:
         version, day = await get_source_version(key)
     except Exception as e:
         logger.error(f"📭 Версия {key} не проверена: {e}")
-        return last_version
+        return last_version, last_sent_at
 
     if version == last_version:
         logger.info(f"📭 Версия {key} не изменилась: {version}")
-        return last_version
+        return last_version, last_sent_at
+
+    now = datetime.now()
 
     if last_version is None:
         # Первый запуск без файла состояния: запоминаем текущую версию молча,
         # иначе бот разошлёт «новинку», которая вышла задолго до него.
-        _save_last_version(key, version)
+        _save_last_version(key, version, now)
         logger.info(f"📭 Версия {key} запомнена без рассылки (первый запуск): {version}")
-        return version
+        return version, now
 
-    if not _in_broadcast_window(datetime.now(), hour_from, hour_to):
+    if not force and not _in_broadcast_window(now, hour_from, hour_to):
         logger.info(
             f"📭 Версия {key} изменилась ({last_version} → {version}), но не время "
             f"({hour_from}:00–{hour_to}:00) — рассылка отложена до окна"
         )
-        return last_version
+        return last_version, last_sent_at
 
     suffix = f" {day}" if day else ""
     report = f"🆕 {label} {version}{suffix} (было {last_version})"
@@ -360,10 +395,10 @@ async def _check_version_change(mc, key: str, channel_idx: int,
         logger.info(f"📤 Версия {key} изменилась ({last_version} → {version}), отправлено в канал {channel_idx}: {report}")
     except Exception as e:
         logger.error(f"📭 Рассылка версии {key} в канал {channel_idx} не отправлена: ошибка {e}")
-        return last_version
+        return last_version, last_sent_at
 
-    _save_last_version(key, version)
-    return version
+    _save_last_version(key, version, now)
+    return version, now
 
 
 def _humanize_interval(seconds: int) -> str:
@@ -374,26 +409,72 @@ def _humanize_interval(seconds: int) -> str:
     return f"{seconds} с"
 
 
+def _seconds_until_hour(now: datetime, hour: int) -> float:
+    """Секунды до ближайшего наступления `hour:00` (сегодня или завтра)."""
+    candidate = now.replace(hour=hour, minute=0, second=0, microsecond=0)
+    if candidate <= now:
+        candidate += timedelta(days=1)
+    return (candidate - now).total_seconds()
+
+
 async def _source_scheduler(mc, key: str, channel_idx: int, interval_seconds: int,
                             hour_from: int, hour_to: int) -> None:
-    """Цикл проверки одного источника — свой интервал у каждого."""
-    last_version = _load_last_version(key)
+    """Цикл проверки одного источника — свой интервал у каждого.
+
+    Спит до того, что наступит раньше: обычный интервал или ближайшее
+    открытие окна (`hour_from:00`, каждые сутки). Будильник открытия окна
+    сам по себе не форсирует проверку — только когда до этого с последней
+    отправки уже прошло не меньше interval_seconds, то есть версия либо
+    подзадержалась в отложенном состоянии, либо штатная проверка давно не
+    случалась (бот долго не работал). Без этого будильника отложенная вне
+    окна версия могла бы застрять навсегда — см. комментарий выше файла.
+    """
+    last_version, last_sent_at = _load_last_version(key)
 
     await asyncio.sleep(5.0)
-    last_version = await _check_version_change(
-        mc, key, channel_idx, hour_from, hour_to, last_version
+    last_version, last_sent_at = await _check_version_change(
+        mc, key, channel_idx, hour_from, hour_to, last_version, last_sent_at
     )
 
     human = _humanize_interval(interval_seconds)
     while True:
-        next_run = datetime.now() + timedelta(seconds=interval_seconds)
+        now = datetime.now()
+        window_wait = _seconds_until_hour(now, hour_from)
+        next_run = now + timedelta(seconds=min(interval_seconds, window_wait))
         logger.info(
-            f"⏰ Следующая проверка версии {key} через {human} "
-            f"({next_run.strftime('%Y-%m-%d %H:%M')} по местному)"
+            f"⏰ Следующая проверка версии {key} не позже {next_run.strftime('%Y-%m-%d %H:%M')} "
+            f"по местному (интервал {human}, ближайшее окно через "
+            f"{_humanize_interval(int(window_wait))})"
         )
-        await asyncio.sleep(interval_seconds)
-        last_version = await _check_version_change(
-            mc, key, channel_idx, hour_from, hour_to, last_version
+
+        interval_sleep = asyncio.ensure_future(asyncio.sleep(interval_seconds))
+        window_sleep = asyncio.ensure_future(asyncio.sleep(window_wait))
+        done, pending = await asyncio.wait(
+            {interval_sleep, window_sleep}, return_when=asyncio.FIRST_COMPLETED
+        )
+        for task in pending:
+            task.cancel()
+
+        force = False
+        if window_sleep in done:
+            # Проснулись (в том числе) по будильнику открытия окна — не
+            # обязательно эксклюзивно: если interval_seconds кратен суткам,
+            # оба будильника с какого-то момента срабатывают ОДНОВРЕМЕННО
+            # (окно и обычный таймер совпадают по фазе), и `in done` тогда
+            # истинно для обоих сразу — раньше здесь стояло дополнительное
+            # `and interval_sleep not in done`, из-за которого именно этот,
+            # самый частый случай (интервал вида `Nd`/`24h`) никогда не
+            # форсировался, и отложенная версия могла зависнуть навсегда.
+            # Форсируем, только если рассылка и так подзадержалась.
+            stale = (last_sent_at is None or
+                    (datetime.now() - last_sent_at).total_seconds() >= interval_seconds)
+            if stale:
+                force = True
+                logger.info(f"⏰ Окно версии {key} открылось, рассылка задержалась — проверяю вне очереди")
+
+        last_version, last_sent_at = await _check_version_change(
+            mc, key, channel_idx, hour_from, hour_to, last_version, last_sent_at,
+            force=force,
         )
 
 

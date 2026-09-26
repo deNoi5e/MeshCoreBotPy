@@ -81,7 +81,11 @@ async def get_traffic_omsk() -> str:
 
 
 def _in_broadcast_window(now: datetime, hour_from: int, hour_to: int) -> bool:
-    return hour_from <= now.hour < hour_to
+    if hour_from <= hour_to:
+        return hour_from <= now.hour < hour_to
+    # Окно переходит через полночь (напр. 22–6 или 7–0): "с hour_from до
+    # конца суток" ИЛИ "с начала суток до hour_to".
+    return now.hour >= hour_from or now.hour < hour_to
 
 
 def _load_last_score() -> int | None:
