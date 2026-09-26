@@ -17,6 +17,7 @@ from core.commands import dispatch
 from core.moon import OMSK_LAT, OMSK_LON
 from core.msgsplit import split_msg, str_byte_len
 from core.traffic import traffic_broadcast_scheduler
+from core.versions import SOURCES as versions_sources, versions_broadcast_scheduler
 from core.weather import to_lat, weather_broadcast_scheduler
 
 load_dotenv()
@@ -69,6 +70,60 @@ def test_split():
         print(f"{part}    ({str_byte_len(part)} bytes)")
 
 
+_INTERVAL_UNITS = {"m": 60, "h": 3600, "d": 86400}
+_VERSIONS_INTERVAL_DEFAULT = "24h"
+
+
+def _parse_interval_seconds(raw: str) -> int | None:
+    """`30m`/`2h`/`3d` -> секунды. Голое число — часы (обратная совместимость).
+
+    Возвращает None, если значение не разобрать — вызывающая сторона решает,
+    что с этим делать.
+    """
+    text = raw.strip().lower()
+    if not text:
+        return None
+    unit = _INTERVAL_UNITS.get(text[-1])
+    number, multiplier = (text[:-1], unit) if unit else (text, 3600)
+    try:
+        value = int(number)
+    except ValueError:
+        return None
+    if value < 0:
+        return None
+    return value * multiplier
+
+
+def _version_interval_seconds(key: str) -> int:
+    """Интервал проверки версии источника в секундах из env.
+
+    Формат — число с суффиксом `m`/`h`/`d` (`30m`, `2h`, `3d`); число без
+    суффикса понимается как часы, поэтому прежние `VERSIONS_*=24` работают
+    как раньше. По умолчанию 24 часа. Нечитаемое и отрицательное значение —
+    ошибка конфигурации, подменяется умолчанием с предупреждением. Ноль
+    оставляем как есть: это осмысленное «не проверять этот источник».
+    """
+    name = f"VERSIONS_{key.upper()}_INTERVAL"
+    raw = os.environ.get(name)
+    if raw is None:
+        # Прежнее имя переменной — чтобы не ломать уже настроенные .env.
+        legacy = f"{name}_HOURS"
+        raw = os.environ.get(legacy)
+        if raw is not None:
+            name = legacy
+    if raw is None:
+        raw = _VERSIONS_INTERVAL_DEFAULT
+
+    seconds = _parse_interval_seconds(raw)
+    if seconds is None:
+        logger.warning(
+            f"⚠️  {name}={raw!r} не разобрать (ожидается 30m/2h/3d), "
+            f"использую {_VERSIONS_INTERVAL_DEFAULT}"
+        )
+        return _parse_interval_seconds(_VERSIONS_INTERVAL_DEFAULT)
+    return seconds
+
+
 async def main():
     port = os.environ["MESHCORE_PORT"]
     weather_api_key = os.environ.get("OPENWEATHERMAP_API_KEY", "")
@@ -102,6 +157,19 @@ async def main():
         # поэтому от места не зависит: нужен только часовой пояс вывода.
         "mercury": {
             "timezone_offset_hours": int(os.environ.get("WEATHER_TIMEZONE_OFFSET", "6")),
+        },
+        # Слежение за новыми релизами прошивок и приложений: каждый источник
+        # проверяется со своим интервалом (`30m`/`2h`/`3d`), в канал уходит
+        # только при смене версии. Канал и окно тишины общие. Интервал 0
+        # отключает проверку конкретного источника.
+        "versions_broadcast": {
+            "channel_idx": int(os.environ.get("VERSIONS_CHANNEL_IDX", "3")),
+            "hour_from": int(os.environ.get("VERSIONS_HOUR_FROM", "7")),
+            "hour_to": int(os.environ.get("VERSIONS_HOUR_TO", "19")),
+            "interval_seconds": {
+                key: _version_interval_seconds(key)
+                for key in versions_sources
+            },
         },
     }
     advert_interval_minutes = int(os.environ.get("ADVERT_INTERVAL_MINUTES", "30"))
@@ -370,6 +438,7 @@ async def main():
             listen(),
             weather_broadcast_scheduler(mc, config),
             traffic_broadcast_scheduler(mc, config),
+            versions_broadcast_scheduler(mc, config),
             advert_scheduler(),
         )
     except KeyboardInterrupt:
