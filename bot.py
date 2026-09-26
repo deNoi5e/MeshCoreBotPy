@@ -189,6 +189,19 @@ async def main():
     mc = await MeshCore.create_serial(port=port)
     if platform.system() == "Linux":
         await mc.connect()
+
+    # DEVICE_QUERY с версией 3 переключает прошивку на CHANNEL_MSG_RECV_V3 — только
+    # в нём библиотека отдаёт txt_hash для точного поиска маршрута. Прошивка держит
+    # эту версию в RAM до перезагрузки, поэтому объявлять её надо при каждом старте.
+    device_info = await mc.commands.send_device_query()
+    if device_info is None or device_info.type == events.EventType.ERROR:
+        logger.warning(f"⚠️  DEVICE_QUERY не удался ({device_info}) — поиск маршрута по msg_hash работать не будет")
+    else:
+        info = device_info.payload
+        logger.info(
+            f"📟 Устройство: {info.get('model', '?')}, прошивка {info.get('ver', '?')} "
+            f"(сборка {info.get('fw_build', '?')}, протокол {info.get('fw ver', '?')})"
+        )
     await mc.commands.set_flood_scope(None)
     mc.set_decrypt_channel_logs(True)
 
