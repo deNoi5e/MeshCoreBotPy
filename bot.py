@@ -490,7 +490,12 @@ async def run_bot(mc: MeshCore, port: str, config: dict,
                 preview = pending_bot_sends[sender_timestamp]
                 if path and path_len > 0:
                     chars = path_hash_size * 2
-                    addrs = [path[i:i+chars] for i in range(0, len(path), chars)]
+                    addrs = []
+                    for i in range(0, len(path), chars):
+                        prefix = path[i:i+chars]
+                        contact = mc.get_contact_by_key_prefix(prefix)
+                        name = contact.get('adv_name') if contact else None
+                        addrs.append(f"{prefix} ({name})" if name else prefix)
                     logger.info(f"   📡 Ретранслятор услышал ответ «{preview}»: путь={' → '.join(addrs)}, SNR={snr}, RSSI={rssi}")
                 else:
                     logger.info(f"   📡 Ответ «{preview}» получен напрямую узлом: SNR={snr}, RSSI={rssi}")
@@ -643,6 +648,7 @@ async def run_bot(mc: MeshCore, port: str, config: dict,
                     if event:
                         is_channel = event.type == events.EventType.CHANNEL_MSG_RECV
                         logger.info(f"   is_channel = {is_channel}   event.type = {event.type}")
+                        event_time = time.time()
                         sender_timestamp = event.payload.get('sender_timestamp')
                         txt_hash = event.payload.get('txt_hash')
                         route_data = None
@@ -666,14 +672,32 @@ async def run_bot(mc: MeshCore, port: str, config: dict,
                                     r for r in route_cache
                                     if r['payload_type'] == PAYLOAD_TXT_MSG and r['src'] == src and r['dst'] == dst
                                 ]
-                            best = min(candidates, key=lambda r: abs(sender_timestamp - r['recv_time']), default=None)
-                            if best is not None and abs(sender_timestamp - best['recv_time']) <= 7:
+                            # 1) По времени прихода: RX_LOG того же пакета приходит за ~15 мс до
+                            # события, recv_time — по часам компьютера. Не зависит ни от часов
+                            # отправителя, ни от повторов лички (sender_timestamp — время создания
+                            # сообщения, при повторной отправке он отстаёт на десятки секунд).
+                            ev_path_len = event.payload.get('path_len')
+                            fresh = [
+                                r for r in candidates
+                                if -1 <= event_time - r['recv_time'] <= 3 and r['path_len'] == ev_path_len
+                            ]
+                            best = max(fresh, key=lambda r: r['recv_time'], default=None)
+                            if best is not None:
                                 route_data = {'path': best['path'], 'path_len': best['path_len']}
                                 logger.info(
-                                    f"   🔍 Маршрут найден: sender_ts={sender_timestamp}, recv_time={best['recv_time']}, "
-                                    f"diff={abs(sender_timestamp - best['recv_time'])}s"
+                                    f"   🔍 Маршрут найден: по приходу, recv_time={best['recv_time']}, "
+                                    f"до события {event_time - best['recv_time']:.1f}s"
                                 )
-                            else:
+                            # 2) Запасной — по sender_timestamp, как раньше.
+                            if route_data is None:
+                                best = min(candidates, key=lambda r: abs(sender_timestamp - r['recv_time']), default=None)
+                                if best is not None and abs(sender_timestamp - best['recv_time']) <= 7:
+                                    route_data = {'path': best['path'], 'path_len': best['path_len']}
+                                    logger.info(
+                                        f"   🔍 Маршрут найден: по sender_ts={sender_timestamp}, recv_time={best['recv_time']}, "
+                                        f"diff={abs(sender_timestamp - best['recv_time'])}s"
+                                    )
+                            if route_data is None:
                                 logger.info(
                                     f"   🔍 Маршрут не найден для sender_ts={sender_timestamp}, "
                                     f"доступно recv_times: {[r['recv_time'] for r in candidates]}"
