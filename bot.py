@@ -477,7 +477,11 @@ async def run_bot(mc: MeshCore, port: str, config: dict,
             payload_type = rx_log.get('payload_type')
             sender_timestamp = rx_log.get('sender_timestamp')
 
-            if payload_type == 5 and sender_timestamp in pending_bot_sends:
+            # Одной метки времени мало: бот отвечает в ту же секунду, что пришла команда,
+            # и эхо самой команды совпадает с ответом по sender_timestamp.
+            bot_prefix = f"{mc.self_info.get('name', '')}: "
+            if (payload_type == 5 and sender_timestamp in pending_bot_sends
+                    and (rx_log.get('message') or '').startswith(bot_prefix)):
                 snr = rx_log.get('snr', '?')
                 rssi = rx_log.get('rssi', '?')
                 path = rx_log.get('path', '')
