@@ -497,14 +497,20 @@ async def run_bot(mc: MeshCore, port: str, config: dict,
             path_len = rx_log.get('path_len')
             msg_hash = rx_log.get('msg_hash')
             current_time = int(datetime.now().timestamp())
-            if msg_hash is not None and path:
+            # Событие сообщения прошивка создаёт по первой услышанной копии, остальные —
+            # эхо ретрансляторов. Поэтому храним первую копию и не перезаписываем её,
+            # даже с пустым путём: пустой путь = услышано напрямую от отправителя.
+            if msg_hash is not None and msg_hash not in route_by_hash:
                 route_by_hash[msg_hash] = {
-                    'path': path,
-                    'path_len': path_len,
+                    'path': path or '',
+                    'path_len': path_len or 0,
                     'stored_at': current_time,
                 }
                 if LOG_VERBOSE:
                     logger.info(f"   🔍 RX_LOG сохранена по msg_hash={msg_hash}: path={path}, path_len={path_len}")
+            elif msg_hash is not None and LOG_VERBOSE:
+                logger.info(f"   🔍 RX_LOG эхо msg_hash={msg_hash} пропущено: path={path}, path_len={path_len}")
+            if msg_hash is not None:
                 for k in [k for k, v in route_by_hash.items() if current_time - v['stored_at'] > 30]:
                     del route_by_hash[k]
             if recv_time and path and payload_type in (PAYLOAD_TXT_MSG, PAYLOAD_GRP_TXT):

@@ -33,7 +33,7 @@ class Context:
 async def _ping(ctx: Context) -> str | None:
     if ctx.hops == 0:
         route_info = "Direct 📡"
-    elif ctx.route_data:
+    elif ctx.route_data and ctx.route_data.get('path_len'):
         path = ctx.route_data.get('path', '')
         path_len = ctx.route_data.get('path_len', ctx.hops)
 
@@ -61,7 +61,7 @@ def _resolve_node_name(mc: Any, prefix: str) -> str:
 async def _pingn(ctx: Context) -> str | None:
     if ctx.hops == 0:
         route_info = "Direct 📡"
-    elif ctx.route_data:
+    elif ctx.route_data and ctx.route_data.get('path_len'):
         path = ctx.route_data.get('path', '')
         path_len = ctx.route_data.get('path_len', ctx.hops)
 
