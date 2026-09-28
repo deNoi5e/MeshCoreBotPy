@@ -141,10 +141,31 @@ async def ensure_auto_add_contacts(mc) -> None:
 
 
 def subscribe_contact_events(mc, max_contacts: int | None) -> None:
-    """Логирует переполнение памяти контактов на ноде."""
+    """Логирует добавление контактов и переполнение памяти контактов на ноде."""
     # CONTACTS_FULL приходит без данных — какой узел не влез, видно только по
     # предшествующему NEW_CONTACT (прошивка шлёт его прямо перед CONTACTS_FULL).
     last_discovered: dict = {}
+    # Первый CONTACTS сессии — начальная загрузка всего списка, не добавление.
+    synced = {"initial": False}
+
+    def on_contacts(event):
+        # Сохранённый нодой новый узел прошивка сообщает не NEW_CONTACT (тот — как
+        # раз для несохранённых), а обычным ADVERTISEMENT с одним pubkey, как и для
+        # известного. Библиотека на него дочитывает изменённые контакты, и новый
+        # виден только здесь — как ключ, которого нет в mc.contacts. Обработчик
+        # синхронный: такие диспетчер вызывает сразу, а обработчик библиотеки,
+        # пополняющий mc.contacts, асинхронный и выполнится позже.
+        if not synced["initial"]:
+            synced["initial"] = True
+            return
+        added = [c for key, c in event.payload.items() if key not in mc.contacts]
+        now = time.time()
+        for n, contact in enumerate(added, 1):
+            logger.info(
+                f"➕ Нода сохранила новый контакт {_describe(contact)}, "
+                f"{_heard_text(contact, now)} "
+                f"({len(mc.contacts) + n}/{max_contacts or '?'})"
+            )
 
     def on_new_contact(event):
         last_discovered["contact"] = event.payload
@@ -175,6 +196,7 @@ def subscribe_contact_events(mc, max_contacts: int | None) -> None:
         else:
             logger.warning(f"♻️  Память контактов заполнена — нода вытеснила контакт {pubkey[:12]}")
 
+    mc.subscribe(events.EventType.CONTACTS, on_contacts)
     mc.subscribe(events.EventType.NEW_CONTACT, on_new_contact)
     mc.subscribe(events.EventType.CONTACTS_FULL, on_contacts_full)
     mc.subscribe(events.EventType.CONTACT_DELETED, on_contact_deleted)
