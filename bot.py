@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 from meshcore import MeshCore, SerialConnection, events
 
 from core.commands import dispatch
+from core.echo import track_own_sends
 from core.contacts import (
     contacts_cleanup_scheduler,
     ensure_auto_add_contacts,
@@ -452,6 +453,8 @@ async def run_bot(mc: MeshCore, port: str, config: dict,
 
     await ensure_auto_add_contacts(mc)
     subscribe_contact_events(mc, max_contacts)
+    # До запуска корутин: отправки любого модуля попадут в лог эха ретрансляторов.
+    own_sends = track_own_sends(mc)
 
     await mc.ensure_contacts()
     mc.auto_update_contacts = True
@@ -493,7 +496,6 @@ async def run_bot(mc: MeshCore, port: str, config: dict,
         PAYLOAD_GRP_TXT = 5
         route_cache: list = []
         route_by_hash: dict = {}
-        pending_bot_sends: dict = {}
 
         def on_rx_log(event):
             if event.type != events.EventType.RX_LOG_DATA:
@@ -504,30 +506,10 @@ async def run_bot(mc: MeshCore, port: str, config: dict,
                 logger.info(f"  ----- rx_log payload = {rx_log}")
 
             payload_type = rx_log.get('payload_type')
-            sender_timestamp = rx_log.get('sender_timestamp')
 
-            # Одной метки времени мало: бот отвечает в ту же секунду, что пришла команда,
-            # и эхо самой команды совпадает с ответом по sender_timestamp.
-            bot_prefix = f"{mc.self_info.get('name', '')}: "
-            if (payload_type == 5 and sender_timestamp in pending_bot_sends
-                    and (rx_log.get('message') or '').startswith(bot_prefix)):
-                snr = rx_log.get('snr', '?')
-                rssi = rx_log.get('rssi', '?')
-                path = rx_log.get('path', '')
-                path_len = rx_log.get('path_len', 0)
-                path_hash_size = rx_log.get('path_hash_size', 1)
-                preview = pending_bot_sends[sender_timestamp]
-                if path and path_len > 0:
-                    chars = path_hash_size * 2
-                    addrs = []
-                    for i in range(0, len(path), chars):
-                        prefix = path[i:i+chars]
-                        contact = mc.get_contact_by_key_prefix(prefix)
-                        name = contact.get('adv_name') if contact else None
-                        addrs.append(f"{prefix} ({name})" if name else prefix)
-                    logger.info(f"   📡 Ретранслятор услышал ответ «{preview}»: путь={' → '.join(addrs)}, SNR={snr}, RSSI={rssi}")
-                else:
-                    logger.info(f"   📡 Ответ «{preview}» получен напрямую узлом: SNR={snr}, RSSI={rssi}")
+            # Ретрансляция собственной передачи бота: её логирует own_sends, а в
+            # route_cache ей не место — иначе подбор по времени возьмёт её путь.
+            if own_sends.match(rx_log) is not None:
                 return
 
             recv_time = rx_log.get('recv_time')
@@ -640,14 +622,8 @@ async def run_bot(mc: MeshCore, port: str, config: dict,
                     try:
                         logger.info(f"   📤 Отправляю ответ... {response}")
                         if is_channel:
-                            send_ts = int(time.time())
-                            preview = response[:30] + ("…" if len(response) > 30 else "")
-                            pending_bot_sends[send_ts] = preview
-                            cutoff = send_ts - 60
-                            for k in [k for k in pending_bot_sends if k < cutoff]:
-                                del pending_bot_sends[k]
                             channel_idx = payload.get('channel_idx', 0)
-                            await mc.commands.send_chan_msg(channel_idx, response, timestamp=send_ts)
+                            await mc.commands.send_chan_msg(channel_idx, response)
                         else:
                             await mc.commands.send_msg(dest_key, response)
                         logger.info("   ✨ Ответ успешно отправлен!")

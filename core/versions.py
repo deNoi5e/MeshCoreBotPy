@@ -37,6 +37,7 @@ from datetime import datetime, timedelta
 
 import aiohttp
 import certifi
+from meshcore import events
 
 logger = logging.getLogger(__name__)
 
@@ -308,6 +309,11 @@ _STATE_FILE_TEMPLATE = "versions_last_{key}.txt"
 # Пауза перед сообщением в канал ссылок — чтобы не слать пакеты в эфир подряд.
 _LINK_PAUSE_SECONDS = 5.0
 
+# Сколько ждать, что ретранслятор услышит сообщение в канале ссылок (нода
+# слышит его ретрансляцию), и сколько раз переотправить, если не услышал.
+_ECHO_WAIT_SECONDS = 6.0
+_ECHO_RETRIES = 1
+
 # Сокращатели ссылок для канала ссылок — пробуются по порядку до первого
 # успешного: (имя, адрес API, параметр формата ответа, префикс короткой ссылки).
 # Кэш — на время работы процесса: анонс при старте и повторы шлют ту же
@@ -483,13 +489,74 @@ async def _send_messages(mc, key: str, channel_idx: int, messages: list[str]) ->
     """Сообщения в канал ссылок — каждое после паузы, чтобы не слать пакеты
     в эфир вплотную друг к другу и к основному каналу."""
     for message in messages:
-        try:
-            await asyncio.sleep(_LINK_PAUSE_SECONDS)
-            await mc.commands.send_chan_msg(channel_idx, message)
-            logger.info(f"📤 Версия {key}: отправлено в канал ссылок {channel_idx}: {message}")
-        except Exception as e:
-            logger.error(f"📭 Версия {key} в канал ссылок {channel_idx} не отправлена: ошибка {e}")
+        await asyncio.sleep(_LINK_PAUSE_SECONDS)
+        if not await _send_until_heard(mc, key, channel_idx, message):
             return
+
+
+async def _send_until_heard(mc, key: str, channel_idx: int, message: str) -> bool:
+    """Отправка в канал ссылок с проверкой, что её услышал ретранслятор.
+
+    Признак — нода слышит ретрансляцию своего же пакета (RX_LOG_DATA с тем же
+    текстом и меткой времени и с непустым путём). Своя передача в RX_LOG не
+    попадает, так что эхо означает: пакет ушёл в эфир и его подхватила сеть.
+    Нет эха за `_ECHO_WAIT_SECONDS` — переотправка, не больше `_ECHO_RETRIES`
+    раз. Отсутствие эха не значит, что пакет не дошёл (нода могла не услышать
+    ретрансляцию), поэтому повторов немного — иначе в канале будут дубли.
+
+    Повтор — с новой меткой времени: пакет с прежней дал бы тот же хэш, и
+    ретрансляторы отбросили бы его как уже пересланный. Эхо любой из попыток
+    засчитывается, даже если пришло уже после повтора.
+
+    Само эхо (путь, SNR) пишет в лог `core/echo.py`, здесь — только номер
+    попытки, которую оно подтвердило.
+
+    Возвращает False, если отправка не удалась с ошибкой.
+    """
+    expected = f"{mc.self_info.get('name', '')}: {message}"
+    attempts: dict[int, int] = {}  # sender_timestamp -> номер попытки
+    heard = asyncio.Event()
+
+    def on_rx_log(event):
+        rx_log = event.payload
+        attempt = attempts.get(rx_log.get('sender_timestamp'))
+        if (attempt is None or rx_log.get('payload_type') != 5
+                or rx_log.get('message') != expected or not rx_log.get('path')):
+            return
+        if not heard.is_set():
+            logger.info(f"📡 Версия {key}: сообщение в канале ссылок {channel_idx} "
+                        f"услышано ретранслятором (попытка {attempt})")
+        heard.set()
+
+    subscription = mc.subscribe(events.EventType.RX_LOG_DATA, on_rx_log)
+    try:
+        for attempt in range(1, _ECHO_RETRIES + 2):
+            timestamp = max(int(time.time()), max(attempts, default=0) + 1)
+            attempts[timestamp] = attempt
+            try:
+                await mc.commands.send_chan_msg(channel_idx, message, timestamp=timestamp)
+            except Exception as e:
+                logger.error(f"📭 Версия {key} в канал ссылок {channel_idx} не отправлена "
+                             f"(попытка {attempt}): ошибка {e}")
+                return False
+            logger.info(f"📤 Версия {key}: отправлено в канал ссылок {channel_idx} "
+                        f"(попытка {attempt}): {message}")
+            try:
+                await asyncio.wait_for(heard.wait(), _ECHO_WAIT_SECONDS)
+                return True
+            except asyncio.TimeoutError:
+                pass
+            if attempt <= _ECHO_RETRIES:
+                logger.warning(f"📡 Версия {key}: за {_ECHO_WAIT_SECONDS:g} с ни один ретранслятор "
+                               f"не услышал сообщение в канале ссылок {channel_idx} (попытка "
+                               f"{attempt}) — отправляю повторно")
+            else:
+                logger.warning(f"📡 Версия {key}: ретранслятор не услышал сообщение в канале "
+                               f"ссылок {channel_idx} и после {attempt} попыток — больше не "
+                               f"повторяю")
+        return True
+    finally:
+        mc.unsubscribe(subscription)
 
 
 async def _link_messages(text: str, url: str) -> list[str]:
