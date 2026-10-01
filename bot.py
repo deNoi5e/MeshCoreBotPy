@@ -154,6 +154,27 @@ def _version_interval_seconds(key: str) -> int:
     return seconds
 
 
+def _versions_announce_on_start() -> set[str]:
+    """`VERSIONS_ANNOUNCE_ON_START=ommesh,app` -> {"ommesh", "app"}.
+
+    Пусто или не задано — ничего. Неизвестный ключ пропускается с
+    предупреждением, чтобы опечатка не прошла молча.
+    """
+    raw = os.environ.get("VERSIONS_ANNOUNCE_ON_START", "")
+    keys = set()
+    for key in (part.strip().lower() for part in raw.split(",")):
+        if not key:
+            continue
+        if key not in versions_sources:
+            logger.warning(
+                f"⚠️  VERSIONS_ANNOUNCE_ON_START: неизвестный источник {key!r}, "
+                f"известны: {', '.join(versions_sources)}"
+            )
+            continue
+        keys.add(key)
+    return keys
+
+
 # Переподключение при потере COM-порта: столько попыток подряд с таким
 # интервалом, после чего бот останавливается. Умолчания для одноимённых env.
 RECONNECT_ATTEMPTS_DEFAULT = 10
@@ -255,6 +276,14 @@ def load_settings():
             "channel_idx": int(os.environ.get("VERSIONS_CHANNEL_IDX", "3")),
             "hour_from": int(os.environ.get("VERSIONS_HOUR_FROM", "7")),
             "hour_to": int(os.environ.get("VERSIONS_HOUR_TO", "19")),
+            # Необязательный второй канал: то же сообщение и следом ссылка на
+            # скачивание. Не задан или пуст — ссылки не рассылаются.
+            "link_channel_idx": (int(os.environ["VERSIONS_LINK_CHANNEL_IDX"])
+                                 if os.environ.get("VERSIONS_LINK_CHANNEL_IDX", "").strip()
+                                 else None),
+            # Источники, чья текущая версия уходит в каналы при каждом старте
+            # сессии безусловно — для проверки, что приходит.
+            "announce_on_start": _versions_announce_on_start(),
             "interval_seconds": {
                 key: _version_interval_seconds(key)
                 for key in versions_sources
