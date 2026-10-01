@@ -40,10 +40,10 @@ async def _ping(ctx: Context) -> str | None:
         step = len(path) // path_len;
 
         addrs = [path[i:i+step] for i in range(0, len(path), step)]
-        route_info = f"{path_len} хопов: {' → '.join(addrs)}"
+        route_info = f"{path_len}🐇: {'>'.join(addrs)}"
         logger.info(f"   🔍 /ping: route={ctx.route_data}, info={route_info}")
     else:
-        route_info = f"{ctx.hops} хопов"
+        route_info = f"{ctx.hops}🐇"
         logger.info(f"   🔍 /ping: hops={ctx.hops}, маршрут не найден в кэше")
     return f"🏓 pong ({route_info})"
 
@@ -68,10 +68,10 @@ async def _pingn(ctx: Context) -> str | None:
         step = len(path) // path_len
 
         addrs = [_resolve_node_name(ctx.mc, path[i:i+step]) for i in range(0, len(path), step)]
-        route_info = f"{path_len} хопов: {' → '.join(addrs)}"
+        route_info = f"{path_len}🐇: {'>'.join(addrs)}"
         logger.info(f"   🔍 /pingn: route={ctx.route_data}, info={route_info}")
     else:
-        route_info = f"{ctx.hops} хопов"
+        route_info = f"{ctx.hops}🐇"
         logger.info(f"   🔍 /pingn: hops={ctx.hops}, маршрут не найден в кэше")
     return f"🏓 pong ({route_info})"
 
@@ -85,11 +85,11 @@ async def _pingn(ctx: Context) -> str | None:
 HELP_INFO: dict[str, dict[str, str]] = {
     "/ping": {
         "icon": "🏓",
-        "long": "🏓 /ping - проверка связи, маршрут (Direct или хопы).",
+        "long": "🏓 /ping - проверка связи, маршрут (Direct или 🐇).",
     },
     "/pingn": {
         "icon": "🏓",
-        "long": "🏓 /pingn - как /ping, но хопы с именами узлов.",
+        "long": "🏓 /pingn - как /ping, но 🐇 с именами узлов.",
     },
     "/weather": {
         "icon": "🌤",
