@@ -109,7 +109,7 @@ HELP_INFO: dict[str, dict[str, str]] = {
     },
     "/ver": {
         "icon": "🆕",
-        "long": "🆕 /ver (/version) - свежие версии прошивок MeshCore, EasySkyMesh и приложений.",
+        "long": "🆕 /ver (/version) - свежие версии прошивок MeshCore, EasySkyMesh, YaziFW и приложений.",
     },
     "/moon": {
         "icon": "🌔",
@@ -311,6 +311,15 @@ COMMANDS: dict[str, Callable[..., Coroutine]] = {
     "/test3": _test3,
     "/weather2": _weather2,
 }
+
+# Команды, ответ на которые в канале уходит без обращения «@[отправитель]»:
+# ответ /ver — по строке на источник, и с обращением не влез бы в одно сообщение.
+UNADDRESSED_COMMANDS = {"/ver", "/version", "/versions"}
+
+
+def is_unaddressed(text: str) -> bool:
+    parts = text.split(None, 1)
+    return bool(parts) and parts[0] in UNADDRESSED_COMMANDS
 
 
 async def dispatch(text: str, *, hops: int, route_data: dict | None,

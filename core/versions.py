@@ -17,12 +17,15 @@
     показывает веб-версия приложения, по заголовкам вида
     `## v1.50.0 - 25/September/2026`. Сборки для всех платформ нумеруются
     синхронно, поэтому одна версия описывает приложение в целом;
+  * прошивка YaziFW (`YaziAranea/MeshCore`) — сторонняя сборка MeshCore со
+    своим интерфейсом (Smart UI). Версия берётся из тега (`smartui-0.06`),
+    а не из названия релиза — названия отстают от тегов;
   * приложение Ommesh (`cm4ker/ommesh`, до сентября 2026 — `cm4ker/meshnet`)
     — альтернативный клиент. Все его релизы помечены prerelease, поэтому
     `releases/latest` отдаёт 404 и фильтр prerelease для него отключён. Список
     релизов GitHub отдаёт не в хронологическом порядке (сборки 100+ стоят
     ниже `dev.99`), поэтому свежайший релиз выбирается по `published_at` —
-    это же правило действует и для EasySkyMesh.
+    это же правило действует и для EasySkyMesh и YaziFW.
 
 Релизы MeshCore выходят раз в недели, поэтому результат кэшируется на
 6 часов — у GitHub API без токена лимит 60 запросов в час на IP.
@@ -45,6 +48,7 @@ _GITHUB_RELEASES = "https://api.github.com/repos/{repo}/releases"
 _MESHCORE_REPO = "meshcore-dev/MeshCore"
 _EASYSKYMESH_REPO = "IoTThinks/EasySkyMesh"
 _OMMESH_REPO = "cm4ker/ommesh"
+_YAZIFW_REPO = "YaziAranea/MeshCore"
 _APP_CHANGELOG = "https://app.meshcore.nz/assets/CHANGELOG.md"
 # Ссылка на скачивание приложения для рассылки: у него нет релизов на GitHub,
 # а сборки для всех платформ нумеруются синхронно — даём Google Play.
@@ -155,6 +159,16 @@ async def _ommesh_version() -> tuple[str, str, str]:
     return tag, day, url
 
 
+async def _yazifw_version() -> tuple[str, str, str]:
+    # Версия — из тега, а не из названия релиза: названия отстают от тегов
+    # (тег `smartui-0.06` назван «Smart UI 0.04»). `smartui-0.06-test.2` ->
+    # `0.06-test.2`: префикс ветки в версии лишний.
+    tag, day, url = await _latest_release(_YAZIFW_REPO)
+    if tag.startswith("smartui-"):
+        tag = tag[len("smartui-"):]
+    return tag, day, url
+
+
 # `## v1.50.0 - 25/September/2026` — заголовок версии в CHANGELOG приложения.
 _CHANGELOG_HEADING = re.compile(
     r"^##\s+v(\d+(?:\.\d+)*)\s*-\s*(\d{1,2})/([A-Za-z]+)/(\d{4})\s*$",
@@ -192,8 +206,8 @@ def _format_firmware(versions: dict[str, tuple[str, str, str]]) -> list[str]:
         # Обычный случай: все роли выпускаются одной версией — не дублируем.
         version, day, _url = next(iter(versions.values()))
         suffix = f" {day}" if day else ""
-        return [f"📟 MeshCore {version}{suffix}"]
-    lines = ["📟 MeshCore:"]
+        return [f"MeshCore {version}{suffix}"]
+    lines = ["MeshCore:"]
     for label, (version, day, _url) in versions.items():
         suffix = f" {day}" if day else ""
         lines.append(f"{label} {version}{suffix}")
@@ -204,7 +218,7 @@ def _format_one(label: str, value: tuple[str, str, str] | BaseException) -> tupl
     """Строка ответа для одного источника и признак успеха."""
     if isinstance(value, BaseException):
         logger.warning(f"versions: {label} — не получено: {value}")
-        return f"{label}: ошибка запроса", False
+        return f"{label}: ошибка", False
     version, day, _url = value
     suffix = f" {day}" if day else ""
     return f"{label} {version}{suffix}", True
@@ -222,20 +236,29 @@ async def _meshcore_version() -> tuple[str, str, str]:
     return versions.get("Companion") or next(iter(versions.values()))
 
 
-# Ключ источника -> (подпись в сообщениях, функция получения версии).
+# Ключ источника -> (значок, имя, функция получения версии). Значок — только
+# в рассылке; в ответе `/ver` его нет: ответ должен влезть в одно сообщение.
 # Ключ попадает в имя env-переменной интервала и в имя файла состояния,
 # поэтому менять его — значит сбросить сохранённое состояние рассылки.
-SOURCES: dict[str, tuple[str, object]] = {
-    "meshcore": ("📟 MeshCore", _meshcore_version),
-    "easyskymesh": ("📟 EasySky", _easyskymesh_version),
-    "app": ("📱 App", _app_version),
-    "ommesh": ("📱 Ommesh", _ommesh_version),
+# Порядок задаёт порядок строк в ответе `/ver`.
+SOURCES: dict[str, tuple[str, str, object]] = {
+    "meshcore": ("📟", "MeshCore", _meshcore_version),
+    "easyskymesh": ("📟", "EasySky", _easyskymesh_version),
+    "yazifw": ("📟", "YaziFW", _yazifw_version),
+    "app": ("📱", "App", _app_version),
+    "ommesh": ("📱", "Ommesh", _ommesh_version),
 }
+
+
+def _source_label(key: str) -> str:
+    """Подпись источника в рассылке: значок и имя."""
+    icon, name, _fetch = SOURCES[key]
+    return f"{icon} {name}"
 
 
 async def get_source_version(key: str) -> tuple[str, str, str]:
     """Версия, дата и ссылка на скачивание одного источника. Бросает исключение при ошибке."""
-    _label, fetch = SOURCES[key]
+    _icon, _name, fetch = SOURCES[key]
     return await fetch()
 
 
@@ -245,20 +268,22 @@ async def get_latest_versions() -> str:
     if _cache and time.time() - _cache[0] < _CACHE_TTL:
         return _cache[1]
 
-    firmware, easysky, app, ommesh = await asyncio.gather(
-        _firmware_versions(), _easyskymesh_version(),
-        _app_version(), _ommesh_version(),
+    # MeshCore — по ролям узла (`_firmware_versions()`), а не одной версией,
+    # как в рассылке: если роли разошлись, `/ver` покажет каждую.
+    others = [key for key in SOURCES if key != "meshcore"]
+    firmware, *values = await asyncio.gather(
+        _firmware_versions(), *(SOURCES[key][2]() for key in others),
         return_exceptions=True,
     )
 
-    # Без заголовка и с короткими подписями: четыре строки с датами иначе
+    # Без заголовка, значков и с короткими подписями: строки с датами иначе
     # не влезают в одно сообщение (лимит 130 байт в каналах).
     lines: list[str] = []
     complete = True
 
     if isinstance(firmware, BaseException):
         logger.warning(f"versions: прошивка не получена: {firmware}")
-        lines.append("📟 MeshCore: ошибка запроса")
+        lines.append("MeshCore: ошибка")
         complete = False
     else:
         fw_lines = _format_firmware(firmware)
@@ -266,13 +291,11 @@ async def get_latest_versions() -> str:
             lines.extend(fw_lines)
         else:
             logger.warning("versions: в релизах GitHub нет известных тегов прошивки")
-            lines.append("📟 MeshCore: не найдена")
+            lines.append("MeshCore: не найдена")
             complete = False
 
-    for label, value in (("📟 EasySky", easysky),
-                         ("📱 App", app),
-                         ("📱 Ommesh", ommesh)):
-        line, ok = _format_one(label, value)
+    for key, value in zip(others, values):
+        line, ok = _format_one(SOURCES[key][1], value)
         lines.append(line)
         complete = complete and ok
 
@@ -402,7 +425,7 @@ async def _check_version_change(mc, key: str, channel_idx: int,
     когда рассылка и так уже подзадержалась дольше интервала проверки, и
     ждать обычного планового захода незачем.
     """
-    label, _fetch = SOURCES[key]
+    label = _source_label(key)
     try:
         version, day, url = await get_source_version(key)
     except Exception as e:

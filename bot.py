@@ -13,7 +13,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 from meshcore import MeshCore, SerialConnection, events
 
-from core.commands import dispatch
+from core.commands import dispatch, is_unaddressed
 from core.echo import track_own_sends
 from core.contacts import (
     contacts_cleanup_scheduler,
@@ -616,7 +616,8 @@ async def run_bot(mc: MeshCore, port: str, config: dict,
             if response_all is not None:
                 response_all = to_lat(response_all)
 
-                responses = split_msg(response_all, sender, 130 if is_channel else 150)
+                addressee = "" if is_unaddressed(text) else sender
+                responses = split_msg(response_all, addressee, 130 if is_channel else 150)
 
                 for response in responses:
                     try:
