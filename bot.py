@@ -293,6 +293,10 @@ def load_settings():
         # Удаление с ноды контактов, которых давно не слышно: при старте
         # сессии и затем с интервалом. Избранные не трогаются.
         "contacts_cleanup": _contacts_cleanup_settings(),
+        # Канал, куда сообщать о каждом новом контакте на ноде. Не задан — не сообщать.
+        "contacts_new_channel_idx": (int(os.environ["CONTACTS_NEW_CHANNEL_IDX"])
+                                     if os.environ.get("CONTACTS_NEW_CHANNEL_IDX", "").strip()
+                                     else None),
     }
     advert_interval_minutes = int(os.environ.get("ADVERT_INTERVAL_MINUTES", "30"))
     if advert_interval_minutes <= 0:
@@ -452,7 +456,7 @@ async def run_bot(mc: MeshCore, port: str, config: dict,
     logger.info("=" * 50 + "\n")
 
     await ensure_auto_add_contacts(mc)
-    subscribe_contact_events(mc, max_contacts)
+    subscribe_contact_events(mc, max_contacts, config["contacts_new_channel_idx"])
     # До запуска корутин: отправки любого модуля попадут в лог эха ретрансляторов.
     own_sends = track_own_sends(mc)
 

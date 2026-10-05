@@ -20,6 +20,7 @@ from datetime import datetime
 from meshcore import events
 
 from core.versions import _humanize_interval
+from core.weather import to_lat
 
 logger = logging.getLogger(__name__)
 
@@ -140,13 +141,37 @@ async def ensure_auto_add_contacts(mc) -> None:
         logger.info("   ✅ manual_add_contacts=False — нода сохраняет каждый новый узел")
 
 
-def subscribe_contact_events(mc, max_contacts: int | None) -> None:
-    """Логирует добавление контактов и переполнение памяти контактов на ноде."""
+async def _announce_new_contacts(mc, channel_idx: int, contacts: list[dict]) -> None:
+    """Сообщает в канал о новых контактах, по сообщению на контакт."""
+    for n, contact in enumerate(contacts):
+        if n:
+            await asyncio.sleep(2.0)
+        kind = _CONTACT_TYPES.get(contact.get("type"), f"тип {contact.get('type')}")
+        text = to_lat(
+            f"➕ Новый контакт: {contact.get('adv_name') or '?'} "
+            f"({kind}, {contact.get('public_key', '')[:8]})"
+        )
+        try:
+            await mc.commands.send_chan_msg(channel_idx, text)
+            logger.info(f"   📣 Отправлено в канал {channel_idx}: {text}")
+        except Exception as e:
+            logger.error(f"   ❌ Не удалось сообщить в канал {channel_idx} о новом контакте: {e!r}")
+
+
+def subscribe_contact_events(mc, max_contacts: int | None,
+                             announce_channel_idx: int | None = None) -> None:
+    """Логирует добавление контактов и переполнение памяти контактов на ноде.
+
+    Если задан announce_channel_idx, о каждом новом контакте сообщается в этот канал.
+    """
     # CONTACTS_FULL приходит без данных — какой узел не влез, видно только по
     # предшествующему NEW_CONTACT (прошивка шлёт его прямо перед CONTACTS_FULL).
     last_discovered: dict = {}
     # Первый CONTACTS сессии — начальная загрузка всего списка, не добавление.
     synced = {"initial": False}
+    # Ссылки на задачи отправки: на задачу без ссылок сборщик мусора вправе
+    # прибить её посреди работы.
+    announce_tasks: set[asyncio.Task] = set()
 
     def on_contacts(event):
         # Сохранённый нодой новый узел прошивка сообщает не NEW_CONTACT (тот — как
@@ -166,6 +191,10 @@ def subscribe_contact_events(mc, max_contacts: int | None) -> None:
                 f"{_heard_text(contact, now)} "
                 f"({len(mc.contacts) + n}/{max_contacts or '?'})"
             )
+        if added and announce_channel_idx is not None:
+            task = asyncio.create_task(_announce_new_contacts(mc, announce_channel_idx, added))
+            announce_tasks.add(task)
+            task.add_done_callback(announce_tasks.discard)
 
     def on_new_contact(event):
         last_discovered["contact"] = event.payload
