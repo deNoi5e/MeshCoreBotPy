@@ -322,9 +322,19 @@ def is_unaddressed(text: str) -> bool:
     return bool(parts) and parts[0] in UNADDRESSED_COMMANDS
 
 
+# Фразы без "/", на которые бот отвечает фиксированным текстом.
+# Ключ - фраза в нижнем регистре, сравнивается без учёта регистра и лишних пробелов.
+PHRASES: dict[str, str] = {
+    "ping epta": "Zdarova zaebal 👋",
+}
+
+
 async def dispatch(text: str, *, hops: int, route_data: dict | None,
                    weather_api_key: str, config: dict, mc: Any,
                    sender_key: str = "", sender_name: str = "") -> str | None:
+    phrase_reply = PHRASES.get(" ".join(text.lower().split()))
+    if phrase_reply is not None:
+        return phrase_reply
     if not text.startswith('/'):
         return None
     parts = text.split(None, 1)
