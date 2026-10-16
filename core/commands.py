@@ -106,7 +106,7 @@ HELP_INFO: dict[str, dict[str, str]] = {
     },
     "/rate": {
         "icon": "💱",
-        "long": "💱 /rate (/kurs) - курсы USD/EUR/CNY к рублю по ЦБ РФ.",
+        "long": "💱 /rate (/kurs) - курсы USD/EUR/CNY/KZT к рублю по ЦБ РФ.",
     },
     "/ver": {
         "icon": "🆕",

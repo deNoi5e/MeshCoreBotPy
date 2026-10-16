@@ -23,11 +23,14 @@ logger = logging.getLogger(__name__)
 
 _URL = "https://www.cbr.ru/scripts/XML_daily.asp"
 
-# Валюты в порядке вывода: код -> подпись в ответе
+# Валюты в порядке вывода: код -> (подпись в ответе, за сколько единиц курс).
+# Тенге — за 100, как котирует ЦБ: курс за 1 тенге (~0,15 ₽) с двумя знаками
+# после запятой не показывал бы изменения.
 _CURRENCIES = {
-    "USD": "USD",
-    "EUR": "EUR",
-    "CNY": "CNY",
+    "USD": ("USD", 1),
+    "EUR": ("EUR", 1),
+    "CNY": ("CNY", 1),
+    "KZT": ("100 KZT", 100),
 }
 
 _CACHE_TTL = 30 * 60
@@ -97,14 +100,15 @@ async def get_rates() -> str:
 
     header = f"💱 ЦБ РФ на {cur_date.strftime('%d.%m')}:" if cur_date else "💱 ЦБ РФ:"
     lines = [header]
-    for code, label in _CURRENCIES.items():
+    for code, (label, units) in _CURRENCIES.items():
         rate = rates.get(code)
         if rate is None:
             continue
+        rate *= units
         line = f"{label} {rate:.2f}".replace(".", ",")
         old = prev.get(code)
         if old is not None:
-            delta = rate - old
+            delta = rate - old * units
             line += f" ({delta:+.2f})".replace(".", ",")
         lines.append(line)
 
