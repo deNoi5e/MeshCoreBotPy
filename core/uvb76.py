@@ -169,15 +169,21 @@ async def get_uvb76() -> str:
 # --- Рассылка ---------------------------------------------------------------
 #
 # Новое сообщение уходит в канал сразу, как только появилось на странице
-# зеркала; при старте бота — последнее известное; раз в сутки в заданное
-# время — последнее, если за прошедшие сутки нового не было. Окна тишины
-# нет: сообщения станции редкие, и интересны сразу.
+# зеркала; при старте бота — последнее известное, если в канал уходило не
+# оно; раз в сутки в заданное время — последнее, если за прошедшие сутки
+# нового не было. Окна тишины нет: сообщения станции редкие, и интересны
+# сразу.
 #
-# Состояние — уже виденные сообщения и момент рассылки нового — в файле,
-# чтобы рестарт не разослал уже отправленное повторно и не повторил
-# ежедневное напоминание сразу после свежего сообщения.
+# Состояние — уже виденные сообщения, последнее отправленное в канал и
+# момент рассылки нового — в файле, чтобы рестарт не разослал уже
+# отправленное повторно и не повторил ежедневное напоминание сразу после
+# свежего сообщения.
 
 _STATE_FILE = "uvb76_last.txt"
+# Строка файла состояния с ключом последнего отправленного в канал сообщения.
+# Префикс отличает её от ключей виденных: в файлах, записанных до её
+# появления, за первой строкой сразу идут виденные.
+_SENT_PREFIX = "sent:"
 
 # Сколько виденных сообщений помнить. На странице их 7; запас — на случай,
 # если канал удалит пост и из-под него на страницу вернётся старый.
@@ -206,8 +212,9 @@ _announced_on_start = False
 
 @dataclass
 class _State:
-    seen: list[str]               # ключи виденных сообщений, от старых к новым
+    seen: list[str]               # ключи виденных сообщений в порядке обнаружения
     last_new_at: datetime | None  # когда последний раз разослано новое сообщение
+    last_sent: str | None = None  # ключ последнего сообщения, ушедшего в канал (любого вида)
 
 
 def _load_state() -> _State:
@@ -220,10 +227,16 @@ def _load_state() -> _State:
                 last_new_at = datetime.fromisoformat(lines[0].strip())
             except ValueError:
                 pass
-        seen = [line.strip() for line in lines[1:] if line.strip()]
+        last_sent = None
+        seen = []
+        for line in (line.strip() for line in lines[1:]):
+            if line.startswith(_SENT_PREFIX):
+                last_sent = line[len(_SENT_PREFIX):] or None
+            elif line:
+                seen.append(line)
         logger.info(f"💾 Загружено из {_STATE_FILE}: виденных сообщений УВБ-76 {len(seen)}, "
-                    f"последнее {seen[-1] if seen else '—'}")
-        return _State(seen, last_new_at)
+                    f"последнее {max(seen, default='—')}, в канал ушло {last_sent or '—'}")
+        return _State(seen, last_new_at, last_sent)
     except FileNotFoundError:
         logger.info(f"💾 Файл {_STATE_FILE} не найден, виденные сообщения УВБ-76 неизвестны")
     except Exception as e:
@@ -236,9 +249,10 @@ def _save_state(state: _State) -> None:
     try:
         with open(_STATE_FILE, "w", encoding="utf-8") as f:
             last_new_at = state.last_new_at.isoformat() if state.last_new_at else ""
-            f.write("\n".join([last_new_at, *state.seen]) + "\n")
+            f.write("\n".join([last_new_at, f"{_SENT_PREFIX}{state.last_sent or ''}",
+                               *state.seen]) + "\n")
         logger.info(f"💾 Сохранено в {_STATE_FILE}: последнее виденное сообщение УВБ-76 "
-                    f"{state.seen[-1] if state.seen else '—'}")
+                    f"{max(state.seen, default='—')}")
     except Exception as e:
         logger.warning(f"💾 Не удалось сохранить {_STATE_FILE}: {e}")
 
@@ -292,18 +306,22 @@ async def _check_new(mc, channel_idx: int, state: _State) -> bool:
         logger.info(f"📻 УВБ-76: {len(new) - len(fresh)} сообщ. вышли в эфир раньше "
                     f"{_MAX_AGE_HOURS} ч назад — пропущены без рассылки")
 
-    texts = []
+    # (текст, ключ сообщения); у строки «ещё N» ключа нет.
+    texts: list[tuple[str, str | None]] = []
     if len(fresh) > _MAX_PER_CHECK:
-        texts.append(f"{RADIO} УВБ-76: ещё {len(fresh) - _MAX_PER_CHECK} сообщ. до этих, все — {_SOURCE}")
+        texts.append((f"{RADIO} УВБ-76: ещё {len(fresh) - _MAX_PER_CHECK} сообщ. до этих, все — {_SOURCE}",
+                      None))
         fresh = fresh[-_MAX_PER_CHECK:]
-    texts.extend(_format(msg, f"{RADIO} УВБ-76") for msg in fresh)
+    texts.extend((_format(msg, f"{RADIO} УВБ-76"), msg.key) for msg in fresh)
 
     sent = False
-    for n, text in enumerate(texts):
+    for n, (text, key) in enumerate(texts):
         if n:
             await asyncio.sleep(_SEND_PAUSE_SECONDS)
         if await _send(mc, channel_idx, text):
             sent = True
+            if key:
+                state.last_sent = key
         elif not sent:
             # Не ушло ни одно — состояние не трогаем, повторим на следующей проверке.
             return False
@@ -315,14 +333,25 @@ async def _check_new(mc, channel_idx: int, state: _State) -> bool:
     return bool(fresh)
 
 
-async def _announce(mc, channel_idx: int, prefix: str, reason: str) -> bool:
+async def _announce(mc, channel_idx: int, state: _State, prefix: str, reason: str,
+                    *, only_if_changed: bool = False) -> bool:
+    """Шлёт в канал последнее сообщение станции. С `only_if_changed` — только
+    если в канал последним уходило не оно. Возвращает False при ошибке."""
     try:
         message = await _latest_message()
     except Exception as e:
         logger.error(f"📻 УВБ-76 ({reason}) не отправлено: {_describe_error(e)}")
         return False
+    if only_if_changed and message.key == state.last_sent:
+        logger.info(f"📻 УВБ-76 ({reason}): последнее сообщение (эфир {message.aired:%d.%m %H:%M} МСК) "
+                    f"уже уходило в канал — не отправляю")
+        return True
     logger.info(f"📻 УВБ-76 ({reason}): эфир {message.aired:%d.%m %H:%M} МСК")
-    return await _send(mc, channel_idx, _format(message, prefix))
+    if not await _send(mc, channel_idx, _format(message, prefix)):
+        return False
+    state.last_sent = message.key
+    _save_state(state)
+    return True
 
 
 def _is_day(now_msk: datetime) -> bool:
@@ -338,8 +367,10 @@ async def _poll_loop(mc, channel_idx: int, state: _State,
     while True:
         sent_new = await _check_new(mc, channel_idx, state)
         if not _announced_on_start:
-            # Только что разосланное новое и есть последнее — не дублируем.
-            if sent_new or await _announce(mc, channel_idx, f"{PIN} УВБ-76 последнее", "при старте"):
+            # Только что разосланное новое и есть последнее — не дублируем;
+            # и последнее не шлём, если в канал оно уже уходило (до рестарта).
+            if sent_new or await _announce(mc, channel_idx, state, f"{PIN} УВБ-76 последнее",
+                                           "при старте", only_if_changed=True):
                 _announced_on_start = True
 
         seconds = day_seconds if _is_day(datetime.now(MSK)) else night_seconds
@@ -361,7 +392,7 @@ async def _daily_loop(mc, channel_idx: int, state: _State,
         if state.last_new_at and datetime.now(timezone.utc) - state.last_new_at < timedelta(days=1):
             logger.info("📻 УВБ-76: за сутки было новое сообщение — ежедневное напоминание пропущено")
             continue
-        await _announce(mc, channel_idx, f"{RADIO} УВБ-76 новых нет, последнее", "ежедневно")
+        await _announce(mc, channel_idx, state, f"{RADIO} УВБ-76 новых нет, последнее", "ежедневно")
 
 
 async def uvb76_broadcast_scheduler(mc, config: dict) -> None:
