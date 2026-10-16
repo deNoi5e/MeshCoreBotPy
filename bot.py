@@ -58,6 +58,10 @@ except ValueError:
 
 LOG_MAX_AGE_SECONDS = LOG_KEEP_DAYS * 24 * 60 * 60
 
+# Страховочный опрос очереди сообщений ноды: библиотека забирает их только по push
+# MESSAGES_WAITING, и потерянный push оставляет сообщение на ноде до следующего.
+MESSAGE_POLL_INTERVAL_SECONDS = 10
+
 
 def cleanup_old_logs(max_age_seconds: int = LOG_MAX_AGE_SECONDS) -> list[str]:
     """Удаляет старые bot_*.log, возвращает имена удалённых файлов."""
@@ -553,6 +557,35 @@ async def run_bot(mc: MeshCore, port: str, config: dict,
             tick += 1
             await send_advert(flood=(tick % flood_every_n_ticks == 0))
 
+    async def message_poller():
+        # Лог 2026-10-15/16: ~3.5% сообщений приходили на 15–75 с позже эфира —
+        # пачкой вместе со следующим сообщением; за 30 с терялся и маршрут.
+        # Пока выборка библиотеки идёт, не лезем: два get_msg разом путают ответы.
+        while True:
+            await asyncio.sleep(MESSAGE_POLL_INTERVAL_SECONDS)
+            fetch_task = getattr(mc, "_auto_fetch_task", None)
+            if fetch_task is not None and not fetch_task.done():
+                continue
+            try:
+                fetched = 0
+                while fetched < 50:
+                    result = await mc.commands.get_msg()
+                    if result is None or result.type in (
+                        events.EventType.NO_MORE_MSGS, events.EventType.ERROR
+                    ):
+                        break
+                    fetched += 1
+                    await asyncio.sleep(0.1)
+                if fetched:
+                    logger.info(
+                        f"📥 Страховочный опрос: с ноды забрано сообщений: {fetched} "
+                        f"(push MESSAGES_WAITING не дошёл)"
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning(f"⚠️  Страховочный опрос сообщений: {e!r}")
+
     async def listen():
         await mc.start_auto_message_fetching()
         logger.info("🤖 Бот готов! Ожидаю входящие сообщения...\n")
@@ -785,6 +818,7 @@ async def run_bot(mc: MeshCore, port: str, config: dict,
 
     workers = asyncio.gather(
         listen(),
+        message_poller(),
         weather_broadcast_scheduler(mc, config),
         traffic_broadcast_scheduler(mc, config),
         versions_broadcast_scheduler(mc, config),
