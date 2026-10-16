@@ -23,6 +23,7 @@ from core.contacts import (
 from core.moon import OMSK_LAT, OMSK_LON
 from core.msgsplit import split_msg, str_byte_len
 from core.traffic import traffic_broadcast_scheduler
+from core.uvb76 import uvb76_broadcast_scheduler
 from core.versions import SOURCES as versions_sources, versions_broadcast_scheduler
 from core.weather import to_lat, weather_broadcast_scheduler
 
@@ -231,6 +232,43 @@ def _contacts_cleanup_settings() -> dict:
     return {"max_age_days": max_age_days, "interval_seconds": interval_seconds}
 
 
+UVB76_DAY_INTERVAL_DEFAULT = "15m"
+UVB76_NIGHT_INTERVAL_DEFAULT = "60m"
+UVB76_DAILY_TIME_DEFAULT = "15:00"
+# Чаще не опрашиваем: канал и так выкладывает сообщения с задержкой, а
+# страница зеркала — чужой сайт.
+UVB76_MIN_INTERVAL_SECONDS = 5 * 60
+
+
+def _uvb76_interval_seconds(name: str, default: str) -> int:
+    """Интервал опроса УВБ-76 (`15m`/`1h`); 0 — отключить рассылку, меньше 5 минут
+    зажимается до 5; нечитаемое — умолчание с предупреждением."""
+    raw = os.environ.get(name, default)
+    seconds = _parse_interval_seconds(raw)
+    if seconds is None:
+        logger.warning(f"⚠️  {name}={raw!r} не разобрать (ожидается 15m/1h), использую {default}")
+        seconds = _parse_interval_seconds(default)
+    if seconds == 0:
+        return 0
+    return max(UVB76_MIN_INTERVAL_SECONDS, seconds)
+
+
+def _uvb76_daily_time() -> tuple[int, int] | None:
+    """`UVB76_DAILY_TIME=15:00` (местное время) -> (15, 0); пусто — без напоминания."""
+    raw = os.environ.get("UVB76_DAILY_TIME", UVB76_DAILY_TIME_DEFAULT).strip()
+    if not raw:
+        return None
+    try:
+        hour, minute = (int(part) for part in raw.split(":"))
+        if not (0 <= hour < 24 and 0 <= minute < 60):
+            raise ValueError
+    except ValueError:
+        logger.warning(f"⚠️  UVB76_DAILY_TIME={raw!r} не разобрать (ожидается ЧЧ:ММ), "
+                       f"использую {UVB76_DAILY_TIME_DEFAULT}")
+        hour, minute = (int(part) for part in UVB76_DAILY_TIME_DEFAULT.split(":"))
+    return hour, minute
+
+
 class DeviceDisconnected(Exception):
     """Связь с устройством по COM-порту потеряна посреди работы бота."""
 
@@ -297,6 +335,19 @@ def load_settings():
         "contacts_new_channel_idx": (int(os.environ["CONTACTS_NEW_CHANNEL_IDX"])
                                      if os.environ.get("CONTACTS_NEW_CHANNEL_IDX", "").strip()
                                      else None),
+        # Сообщения УВБ-76: новые — сразу, последнее — при старте и раз в сутки,
+        # если нового не было. Канал не задан — только команда /uvb.
+        "uvb76": {
+            "channel_idx": (int(os.environ["UVB76_CHANNEL_IDX"])
+                            if os.environ.get("UVB76_CHANNEL_IDX", "").strip()
+                            else None),
+            "day_interval_seconds": _uvb76_interval_seconds(
+                "UVB76_DAY_INTERVAL", UVB76_DAY_INTERVAL_DEFAULT),
+            "night_interval_seconds": _uvb76_interval_seconds(
+                "UVB76_NIGHT_INTERVAL", UVB76_NIGHT_INTERVAL_DEFAULT),
+            "daily_time": _uvb76_daily_time(),
+            "timezone_offset_hours": int(os.environ.get("WEATHER_TIMEZONE_OFFSET", "6")),
+        },
     }
     advert_interval_minutes = int(os.environ.get("ADVERT_INTERVAL_MINUTES", "30"))
     if advert_interval_minutes <= 0:
@@ -724,6 +775,7 @@ async def run_bot(mc: MeshCore, port: str, config: dict,
         weather_broadcast_scheduler(mc, config),
         traffic_broadcast_scheduler(mc, config),
         versions_broadcast_scheduler(mc, config),
+        uvb76_broadcast_scheduler(mc, config),
         contacts_cleanup_scheduler(mc, config),
         advert_scheduler(),
     )

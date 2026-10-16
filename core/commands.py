@@ -10,6 +10,7 @@ from .mercury import get_mercury
 from .moon import OMSK_LAT, OMSK_LON, get_moon
 from .sun import get_sun
 from .traffic import get_traffic_omsk
+from .uvb76 import get_uvb76
 from .versions import get_latest_versions
 from .weather import get_daily_forecast, get_weather, to_lat
 from .openmeteo_omsk import get_weather as openmeteo_get_weather
@@ -131,6 +132,10 @@ HELP_INFO: dict[str, dict[str, str]] = {
         "icon": "🕛",
         "long": "🕛 /doomsday - Часы Судного дня: сколько до полуночи (thebulletin.org).",
     },
+    "/uvb": {
+        "icon": "📻",
+        "long": "📻 /uvb (/uvb76, /buzzer) - последнее сообщение УВБ-76 (t.me/uvb76logs).",
+    },
     "/weathernow": {
         "icon": "🌤",
         "long": "🌤 /weathernow - шлёт дневной прогноз погоды в канал погоды.",
@@ -157,6 +162,8 @@ _HELP_ALIASES: dict[str, str] = {
     "/luna": "/moon",
     "/merc": "/mercury",
     "/retro": "/mercury",
+    "/uvb76": "/uvb",
+    "/buzzer": "/uvb",
 }
 
 
@@ -227,6 +234,10 @@ async def _sun(ctx: Context) -> str | None:
 
 async def _doomsday(ctx: Context) -> str | None:
     return await get_doomsday()
+
+
+async def _uvb(ctx: Context) -> str | None:
+    return await get_uvb76()
 
 
 async def _weather(ctx: Context) -> str | None:
@@ -306,6 +317,9 @@ COMMANDS: dict[str, Callable[..., Coroutine]] = {
     "/retro": _mercury,
     "/sun": _sun,
     "/doomsday": _doomsday,
+    "/uvb": _uvb,
+    "/uvb76": _uvb,
+    "/buzzer": _uvb,
     "/test": _test,
     "/test2": _test2,
     "/test3": _test3,
