@@ -59,19 +59,24 @@ except ValueError:
 LOG_MAX_AGE_SECONDS = LOG_KEEP_DAYS * 24 * 60 * 60
 
 
-def cleanup_old_logs(max_age_seconds: int = LOG_MAX_AGE_SECONDS) -> None:
+def cleanup_old_logs(max_age_seconds: int = LOG_MAX_AGE_SECONDS) -> list[str]:
+    """Удаляет старые bot_*.log, возвращает имена удалённых файлов."""
+    deleted = []
     if max_age_seconds <= 0:
-        return
+        return deleted
     now = time.time()
-    for path in glob.glob('bot_*.log'):
+    for path in sorted(glob.glob('bot_*.log')):
         try:
             if now - os.path.getmtime(path) > max_age_seconds:
                 os.remove(path)
+                deleted.append(path)
         except OSError:
             pass
+    return deleted
 
 
-cleanup_old_logs()
+# Логгер ещё не настроен — результат чистки пишем в лог после basicConfig.
+_deleted_logs = cleanup_old_logs()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -86,6 +91,14 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 if _log_keep_days_warning:
     logger.warning(_log_keep_days_warning)
+if LOG_KEEP_DAYS > 0:
+    if _deleted_logs:
+        logger.info(
+            f"🧹 Удалено старых логов (старше {LOG_KEEP_DAYS} сут): "
+            f"{len(_deleted_logs)}: {', '.join(_deleted_logs)}"
+        )
+    else:
+        logger.info(f"🧹 Старых логов (старше {LOG_KEEP_DAYS} сут) нет, удалять нечего")
 
 # Подробные логи сырых payload'ов (RX_LOG_DATA, входящие сообщения) — для отладки
 # маршрутов. Шумные: RX_LOG_DATA приходит на каждый услышанный пакет.
