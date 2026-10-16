@@ -350,9 +350,17 @@ _NUDES_FIXED: list[str] = [
 ]
 
 
+# Картинки, понятные только со своей подписью: без подписи или с общей - не в тему.
+_NUDES_OWN_CAPTION_ONLY: set[str] = {"[ . ][ . ]", "(  )(  )"}
+
+
 async def _nudes(ctx: Context) -> str | None:
     pick = random.choice([*_NUDES_PICS, *_NUDES_FIXED])
-    if pick in _NUDES_FIXED or random.random() < 1 / 3:
+    if pick in _NUDES_FIXED:
+        return pick
+    if pick in _NUDES_OWN_CAPTION_ONLY:
+        return random.choice(_NUDES_PICS[pick]).format(pick)
+    if random.random() < 1 / 3:
         return pick
     return random.choice(_NUDES_PICS[pick] + _NUDES_CAPTIONS).format(pick)
 
