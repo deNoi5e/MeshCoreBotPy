@@ -5,7 +5,7 @@ import random
 from dataclasses import dataclass
 from typing import Any, Callable, Coroutine
 
-from .currency import get_rates
+from .currency import convert as convert_currency, get_rates
 from .doomsday import get_doomsday
 from .mercury import get_mercury
 from .moon import OMSK_LAT, OMSK_LON, get_moon
@@ -107,7 +107,7 @@ HELP_INFO: dict[str, dict[str, str]] = {
     },
     "/rate": {
         "icon": "💱",
-        "long": "💱 /rate (/kurs) - курсы USD/EUR/CNY/KZT к рублю по ЦБ РФ.",
+        "long": "💱 /rate (/kurs) - курсы USD/EUR/CNY/KZT к рублю по ЦБ РФ. /rate 65 USD - пересчёт суммы в рубли, /rate 65 USD EUR - в другую валюту.",
     },
     "/ver": {
         "icon": "🆕",
@@ -201,6 +201,8 @@ async def _traffic(ctx: Context) -> str | None:
 
 
 async def _rate(ctx: Context) -> str | None:
+    if ctx.args.strip():
+        return await convert_currency(ctx.args)
     return await get_rates()
 
 
