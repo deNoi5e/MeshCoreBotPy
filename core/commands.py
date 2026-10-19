@@ -13,7 +13,7 @@ from .sun import get_sun
 from .traffic import get_traffic_omsk
 from .uvb76 import get_uvb76
 from .versions import get_latest_versions
-from .weather import get_daily_forecast, get_weather, to_lat
+from .weather import from_lat, get_daily_forecast, get_weather, to_lat
 from .openmeteo_omsk import get_weather as openmeteo_get_weather
 
 logger = logging.getLogger(__name__)
@@ -246,8 +246,9 @@ async def _weather(ctx: Context) -> str | None:
         return "❓ Использование: /weather <город>  например: /weather Москва"
     if not ctx.weather_api_key:
         return "❌ API ключ погоды не настроен"
-    result = await get_weather(ctx.args, ctx.weather_api_key)
-    logger.info(f"   🌤 Погода для «{ctx.args}» получена")
+    city = from_lat(ctx.args)
+    result = await get_weather(city, ctx.weather_api_key)
+    logger.info(f"   🌤 Погода для «{city}» получена")
     return result
 
 
@@ -266,8 +267,9 @@ async def _weathernow(ctx: Context) -> str | None:
     return None
 
 async def _weather2(ctx: Context) -> str | None:
-    result = await openmeteo_get_weather() if not ctx.args else await openmeteo_get_weather(ctx.args)
-    logger.info(f"   🌤 Погода для «{ctx.args}» получена: {result}")
+    city = from_lat(ctx.args)
+    result = await openmeteo_get_weather() if not city else await openmeteo_get_weather(city)
+    logger.info(f"   🌤 Погода для «{city}» получена: {result}")
     return str(result)
 
 async def _test(ctx: Context) -> str | None: 

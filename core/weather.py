@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 import ssl
 from datetime import datetime, timezone, timedelta
 
@@ -19,6 +20,26 @@ _CYR_HOMOGLYPHS = str.maketrans({
 
 def to_lat(text: str) -> str:
     return text.translate(_CYR_HOMOGLYPHS)
+
+
+# Обратное преобразование: клиенты сети сами подменяют часть кириллицы латинскими
+# двойниками (в канале приходит «Oмcк» с латинскими O и c), и геокодер такое слово
+# не находит.
+_LAT_HOMOGLYPHS = str.maketrans({lat: cyr for cyr, lat in _CYR_HOMOGLYPHS.items()})
+_CYRILLIC_LETTER = re.compile('[а-яёА-ЯЁ]')
+
+
+def from_lat(text: str) -> str:
+    """Возвращает кириллицу в словах, где она смешана с латинскими двойниками.
+
+    Слово целиком из латиницы (Moscow) не трогается: без единой кириллической
+    буквы нельзя отличить подмену от настоящего латинского названия.
+    """
+    def fix(m: re.Match) -> str:
+        word = m.group(0)
+        return word.translate(_LAT_HOMOGLYPHS) if _CYRILLIC_LETTER.search(word) else word
+
+    return re.sub(r'[^\s\-]+', fix, text)
 
 
 def _weather_icon(cond_id: int) -> str:
