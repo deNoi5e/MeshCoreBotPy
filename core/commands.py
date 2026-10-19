@@ -95,7 +95,7 @@ HELP_INFO: dict[str, dict[str, str]] = {
     },
     "/weather": {
         "icon": "🌤",
-        "long": "🌤 /weather <город> - текущая погода (OpenWeatherMap).",
+        "long": "🌤 /weather <город> - текущая погода (OpenWeatherMap, без города - Омск).",
     },
     "/weather2": {
         "icon": "🌤",
@@ -242,11 +242,9 @@ async def _uvb(ctx: Context) -> str | None:
 
 
 async def _weather(ctx: Context) -> str | None:
-    if not ctx.args:
-        return "❓ Использование: /weather <город>  например: /weather Москва"
     if not ctx.weather_api_key:
         return "❌ API ключ погоды не настроен"
-    city = from_lat(ctx.args)
+    city = from_lat(ctx.args) if ctx.args else "Omsk"
     result = await get_weather(city, ctx.weather_api_key)
     logger.info(f"   🌤 Погода для «{city}» получена")
     return result
