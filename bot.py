@@ -13,6 +13,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 from meshcore import MeshCore, SerialConnection, events
 
+from core.botver import BOT_VERSION
 from core.commands import dispatch, is_unaddressed
 from core.echo import track_own_sends
 from core.contacts import (
@@ -352,6 +353,10 @@ def load_settings():
         "contacts_new_channel_idx": (int(os.environ["CONTACTS_NEW_CHANNEL_IDX"])
                                      if os.environ.get("CONTACTS_NEW_CHANNEL_IDX", "").strip()
                                      else None),
+        # Канал, куда бот сообщает свою версию при запуске. Не задан — только лог.
+        "bot_ver_channel_idx": (int(os.environ["BOT_VER_CHANNEL"])
+                                if os.environ.get("BOT_VER_CHANNEL", "").strip()
+                                else None),
         # Сообщения УВБ-76: новые — сразу, последнее — при старте и раз в сутки,
         # если нового не было. Канал не задан — только команда /uvb.
         "uvb76": {
@@ -519,7 +524,7 @@ async def run_bot(mc: MeshCore, port: str, config: dict,
             logger.debug(f"   Канал {channel_idx} недоступен: {e}")
 
     logger.info("=" * 50)
-    logger.info("🎉 MeshCore Bot запущен!")
+    logger.info(f"🎉 MeshCore Bot v{BOT_VERSION} запущен!")
     logger.info(f"📡 Подключено к {port}")
     logger.info("=" * 50 + "\n")
 
@@ -542,6 +547,21 @@ async def run_bot(mc: MeshCore, port: str, config: dict,
             logger.info(f"   ✅ Advert ({kind}) отправлен успешно: {result}")
         except Exception as e:
             logger.error(f"   ❌ Ошибка отправки advert ({kind}): {e}")
+
+    async def announce_bot_version():
+        """Сообщает версию бота в BOT_VER_CHANNEL — раз за процесс, а не при
+        каждом переподключении к ноде: перезапуск бота, а не обрыв USB."""
+        channel_idx = config["bot_ver_channel_idx"]
+        if channel_idx is None or config.get("_bot_ver_announced"):
+            return
+        await asyncio.sleep(10.0)
+        config["_bot_ver_announced"] = True
+        text = to_lat(f"🤖 Бот запущен, версия {BOT_VERSION}")
+        try:
+            await mc.commands.send_chan_msg(channel_idx, text)
+            logger.info(f"🤖 Версия бота {BOT_VERSION} отправлена в канал {channel_idx}")
+        except Exception as e:
+            logger.error(f"❌ Ошибка отправки версии бота в канал {channel_idx}: {e}")
 
     async def advert_scheduler():
         await asyncio.sleep(5.0)
@@ -824,6 +844,7 @@ async def run_bot(mc: MeshCore, port: str, config: dict,
         versions_broadcast_scheduler(mc, config),
         uvb76_broadcast_scheduler(mc, config),
         contacts_cleanup_scheduler(mc, config),
+        announce_bot_version(),
         advert_scheduler(),
     )
     lost_wait = asyncio.create_task(connection_lost.wait())
