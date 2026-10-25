@@ -558,8 +558,12 @@ async def run_bot(mc: MeshCore, port: str, config: dict,
         config["_bot_ver_announced"] = True
         text = to_lat(f"🤖 Бот запущен, версия {BOT_VERSION}")
         try:
-            await mc.commands.send_chan_msg(channel_idx, text)
-            logger.info(f"🤖 Версия бота {BOT_VERSION} отправлена в канал {channel_idx}")
+            result = await mc.commands.send_chan_msg(channel_idx, text)
+            if result is None or result.type == events.EventType.ERROR:
+                logger.error(f"❌ Нода не приняла версию бота для канала {channel_idx}: "
+                             f"{result.payload if result else 'нет ответа'}")
+            else:
+                logger.info(f"🤖 Версия бота {BOT_VERSION} отправлена в канал {channel_idx}: {text} ({result.type})")
         except Exception as e:
             logger.error(f"❌ Ошибка отправки версии бота в канал {channel_idx}: {e}")
 

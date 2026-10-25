@@ -5,6 +5,7 @@ import random
 from dataclasses import dataclass
 from typing import Any, Callable, Coroutine
 
+from .botver import BOT_VERSION
 from .currency import convert as convert_currency, get_rates
 from .doomsday import get_doomsday
 from .mercury import get_mercury
@@ -207,7 +208,9 @@ async def _rate(ctx: Context) -> str | None:
 
 
 async def _ver(ctx: Context) -> str | None:
-    return await get_latest_versions()
+    # Версия самого бота — первой строкой; короткая подпись, чтобы остальные
+    # строки по-прежнему влезали в одно сообщение.
+    return f"Bot {BOT_VERSION}\n{await get_latest_versions()}"
 
 
 async def _moon(ctx: Context) -> str | None:
