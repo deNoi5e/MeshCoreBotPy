@@ -10,6 +10,7 @@
 Документация API: https://open-meteo.com/en/docs
 """
 
+import asyncio
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
@@ -143,7 +144,8 @@ async def get_weather(
         if city.strip().lower() in ("омск", "omsk"):
             lat, lon, city_name, country = OMSK_LAT, OMSK_LON, "Омск", "Россия"
         else:
-            lat, lon, city_name, country = geocode_city(city, timeout)
+            # requests синхронный — в потоке, чтобы сбой сети не вешал цикл событий бота
+            lat, lon, city_name, country = await asyncio.to_thread(geocode_city, city, timeout)
     else:
         city_name = city
 
@@ -171,7 +173,9 @@ async def get_weather(
         "timezone": "auto",
     }
 
-    resp = requests.get(FORECAST_URL, params=params, timeout=timeout)
+    resp = await asyncio.to_thread(
+        requests.get, FORECAST_URL, params=params, timeout=timeout
+    )
     resp.raise_for_status()
     cur = resp.json().get("current", {})
 

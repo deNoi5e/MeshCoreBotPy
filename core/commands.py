@@ -5,6 +5,8 @@ import random
 from dataclasses import dataclass
 from typing import Any, Callable, Coroutine
 
+import requests
+
 from .botver import BOT_VERSION
 from .currency import convert as convert_currency, get_rates
 from .doomsday import get_doomsday
@@ -271,7 +273,11 @@ async def _weathernow(ctx: Context) -> str | None:
 
 async def _weather2(ctx: Context) -> str | None:
     city = from_lat(ctx.args)
-    result = await openmeteo_get_weather() if not city else await openmeteo_get_weather(city)
+    try:
+        result = await openmeteo_get_weather() if not city else await openmeteo_get_weather(city)
+    except requests.RequestException as e:
+        logger.warning(f"   🌤 Open-Meteo недоступен: {e}")
+        return "❌ Open-Meteo недоступен"
     logger.info(f"   🌤 Погода для «{city}» получена: {result}")
     return str(result)
 
