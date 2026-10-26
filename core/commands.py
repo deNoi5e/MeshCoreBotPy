@@ -7,7 +7,7 @@ from typing import Any, Callable, Coroutine
 
 import requests
 
-from .botver import BOT_VERSION
+from .botver import BOT_VERSION, deployed_at
 from .currency import convert as convert_currency, get_rates
 from .doomsday import get_doomsday
 from .mercury import get_mercury
@@ -212,7 +212,7 @@ async def _rate(ctx: Context) -> str | None:
 async def _ver(ctx: Context) -> str | None:
     # Версия самого бота — первой строкой; короткая подпись, чтобы остальные
     # строки по-прежнему влезали в одно сообщение.
-    return f"Bot {BOT_VERSION}\n{await get_latest_versions()}"
+    return f"Bot {BOT_VERSION} {deployed_at():%d.%m}\n{await get_latest_versions()}"
 
 
 async def _moon(ctx: Context) -> str | None:

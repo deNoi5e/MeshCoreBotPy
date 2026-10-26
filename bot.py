@@ -13,7 +13,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 from meshcore import MeshCore, SerialConnection, events
 
-from core.botver import BOT_VERSION
+from core.botver import BOT_VERSION, deployed_at
 from core.commands import dispatch, is_unaddressed
 from core.echo import track_own_sends
 from core.contacts import (
@@ -529,7 +529,8 @@ async def run_bot(mc: MeshCore, port: str, config: dict,
             logger.debug(f"   Канал {channel_idx} недоступен: {e}")
 
     logger.info("=" * 50)
-    logger.info(f"🎉 MeshCore Bot v{BOT_VERSION} запущен!")
+    logger.info(f"🎉 MeshCore Bot v{BOT_VERSION} запущен! "
+                f"(версия задеплоена {deployed_at():%d.%m.%Y %H:%M})")
     logger.info(f"📡 Подключено к {port}")
     logger.info("=" * 50 + "\n")
 
@@ -561,7 +562,7 @@ async def run_bot(mc: MeshCore, port: str, config: dict,
             return
         await asyncio.sleep(10.0)
         config["_bot_ver_announced"] = True
-        text = to_lat(f"🤖 Бот запущен, версия {BOT_VERSION}")
+        text = to_lat(f"🤖 Бот запущен, версия {BOT_VERSION} от {deployed_at():%d.%m}")
         try:
             result = await mc.commands.send_chan_msg(channel_idx, text)
             if result is None or result.type == events.EventType.ERROR:
