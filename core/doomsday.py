@@ -80,9 +80,9 @@ async def _fetch_doomsday() -> str:
 
     date_match = _ANNOUNCED_RE.search(html)
     day = _short_date(date_match.group(1)) if date_match else ""
-    suffix = f" ({day})" if day else ""
+    suffix = f" (обновлено {day})" if day else ""
 
-    return f"{CLOCK} Судный день: {amount} {unit_ru} до полуночи{suffix} {_SOURCE}"
+    return f"{CLOCK} Судный день: {amount} {unit_ru} до полуночи{suffix}"
 
 
 async def get_doomsday() -> str:
