@@ -112,12 +112,18 @@ def _deg_to_compass(deg: Optional[float]) -> Optional[str]:
     return _WIND_DIRS[idx]
 
 
-def geocode_city(name: str, timeout: int = 15) -> Tuple[float, float, str, str]:
+def _proxies(proxy: Optional[str]) -> Optional[dict]:
+    """requests-словарь прокси или None (тогда requests сам читает HTTPS_PROXY из окружения)."""
+    return {"http": proxy, "https": proxy} if proxy else None
+
+
+def geocode_city(name: str, timeout: int = 15, proxy: Optional[str] = None) -> Tuple[float, float, str, str]:
     """Находит координаты города по названию через геокодер Open-Meteo."""
     resp = requests.get(
         GEOCODING_URL,
         params={"name": name, "count": 1, "language": "ru", "format": "json"},
         timeout=timeout,
+        proxies=_proxies(proxy),
     )
     resp.raise_for_status()
     results = resp.json().get("results")
@@ -132,6 +138,7 @@ async def get_weather(
     lat: Optional[float] = None,
     lon: Optional[float] = None,
     timeout: int = 15,
+    proxy: Optional[str] = None,
 ) -> Weather:
     """
     Возвращает текущую погоду.
@@ -139,13 +146,15 @@ async def get_weather(
     - Если переданы lat и lon — используются они (city идёт как подпись).
     - Иначе для 'Омск' берутся встроенные координаты, для остальных
       городов координаты ищутся через геокодер.
+    - proxy — URL HTTP(S)-прокси для запросов к Open-Meteo (api.open-meteo.com
+      у части провайдеров недоступен); None — напрямую.
     """
     if lat is None or lon is None:
         if city.strip().lower() in ("омск", "omsk"):
             lat, lon, city_name, country = OMSK_LAT, OMSK_LON, "Омск", "Россия"
         else:
             # requests синхронный — в потоке, чтобы сбой сети не вешал цикл событий бота
-            lat, lon, city_name, country = await asyncio.to_thread(geocode_city, city, timeout)
+            lat, lon, city_name, country = await asyncio.to_thread(geocode_city, city, timeout, proxy)
     else:
         city_name = city
 
@@ -174,7 +183,7 @@ async def get_weather(
     }
 
     resp = await asyncio.to_thread(
-        requests.get, FORECAST_URL, params=params, timeout=timeout
+        requests.get, FORECAST_URL, params=params, timeout=timeout, proxies=_proxies(proxy)
     )
     resp.raise_for_status()
     cur = resp.json().get("current", {})

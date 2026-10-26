@@ -273,8 +273,10 @@ async def _weathernow(ctx: Context) -> str | None:
 
 async def _weather2(ctx: Context) -> str | None:
     city = from_lat(ctx.args)
+    proxy = ctx.config.get("openmeteo", {}).get("proxy")
     try:
-        result = await openmeteo_get_weather() if not city else await openmeteo_get_weather(city)
+        result = (await openmeteo_get_weather(proxy=proxy) if not city
+                  else await openmeteo_get_weather(city, proxy=proxy))
     except requests.RequestException as e:
         logger.warning(f"   🌤 Open-Meteo недоступен: {e}")
         return "❌ Open-Meteo недоступен"

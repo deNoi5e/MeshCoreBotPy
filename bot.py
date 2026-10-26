@@ -320,6 +320,11 @@ def load_settings():
             "lon": float(os.environ.get("MOON_LON", str(OMSK_LON))),
             "timezone_offset_hours": int(os.environ.get("WEATHER_TIMEZONE_OFFSET", "6")),
         },
+        # HTTP-прокси только для запросов Open-Meteo (/weather2): api.open-meteo.com
+        # недоступен из сети M18 напрямую. Не задан — запросы идут без прокси.
+        "openmeteo": {
+            "proxy": os.environ.get("OPENMETEO_PROXY", "").strip() or None,
+        },
         # Ретрограда — геоцентрическое явление, одинаковое для всей Земли,
         # поэтому от места не зависит: нужен только часовой пояс вывода.
         "mercury": {
