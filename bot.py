@@ -610,11 +610,18 @@ async def run_bot(mc: MeshCore, port: str, config: dict,
             except Exception as e:
                 logger.warning(f"⚠️  Страховочный опрос сообщений: {e!r}")
 
+    # Задачи обработки сообщений: хранятся, чтобы их не собрал GC и чтобы отменить
+    # при обрыве сессии (иначе они продолжат работать со старым `mc`).
+    message_tasks: set = set()
+
     async def listen():
         await mc.start_auto_message_fetching()
         logger.info("🤖 Бот готов! Ожидаю входящие сообщения...\n")
 
         processed_messages: set = set()
+        # Ответы уходят в эфир по одному: сообщения обрабатываются параллельными
+        # задачами, и без замка части ответов разных людей шли бы вперемешку без паузы.
+        send_lock = asyncio.Lock()
         # Только текстовые сообщения: иначе подбор по времени подхватывает путь
         # чужого (или собственного, услышанного эхом) ADVERT/ACK/PATH.
         PAYLOAD_TXT_MSG = 2
@@ -744,18 +751,30 @@ async def run_bot(mc: MeshCore, port: str, config: dict,
                 addressee = "" if is_unaddressed(text) else sender
                 responses = split_msg(response_all, addressee, 130 if is_channel else 150)
 
-                for response in responses:
-                    try:
-                        logger.info(f"   📤 Отправляю ответ... {response}")
-                        if is_channel:
-                            channel_idx = payload.get('channel_idx', 0)
-                            await mc.commands.send_chan_msg(channel_idx, response)
-                        else:
-                            await mc.commands.send_msg(dest_key, response)
-                        logger.info("   ✨ Ответ успешно отправлен!")
-                    except Exception as e:
-                        logger.error(f"   ❌ Ошибка отправки ответа: {e}")
-                    time.sleep(2.0)
+                async with send_lock:
+                    for response in responses:
+                        try:
+                            logger.info(f"   📤 Отправляю ответ... {response}")
+                            if is_channel:
+                                channel_idx = payload.get('channel_idx', 0)
+                                await mc.commands.send_chan_msg(channel_idx, response)
+                            else:
+                                await mc.commands.send_msg(dest_key, response)
+                            logger.info("   ✨ Ответ успешно отправлен!")
+                        except Exception as e:
+                            logger.error(f"   ❌ Ошибка отправки ответа: {e}")
+                        # Пауза не блокирует цикл событий, но держит замок — следующий
+                        # ответ уйдёт не раньше чем через 2 с.
+                        await asyncio.sleep(2.0)
+
+        async def handle_message(payload, is_channel, route_data):
+            try:
+                await process_message(payload, is_channel=is_channel, route_data=route_data)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.error(f"Ошибка обработки события: {e}")
+                traceback.print_exc()
 
         while True:
             contact_event = asyncio.create_task(
@@ -833,7 +852,11 @@ async def run_bot(mc: MeshCore, port: str, config: dict,
                                     f"   🔍 Маршрут не найден для sender_ts={sender_timestamp}, "
                                     f"доступно recv_times: {[r['recv_time'] for r in candidates]}"
                                 )
-                        await process_message(event.payload, is_channel=is_channel, route_data=route_data)
+                        # Отдельной задачей: медленная команда (сетевой таймаут до 15 с)
+                        # не должна задерживать приём и обработку следующих сообщений.
+                        task = asyncio.create_task(handle_message(event.payload, is_channel, route_data))
+                        message_tasks.add(task)
+                        task.add_done_callback(message_tasks.discard)
                 except asyncio.CancelledError:
                     pass
                 except Exception as e:
@@ -859,6 +882,8 @@ async def run_bot(mc: MeshCore, port: str, config: dict,
         # после переподключения их запускает заново уже новая сессия.
         lost_wait.cancel()
         workers.cancel()
+        for task in list(message_tasks):
+            task.cancel()
         try:
             await workers
         except asyncio.CancelledError:
