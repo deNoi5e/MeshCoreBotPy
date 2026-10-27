@@ -10,6 +10,7 @@ import requests
 from .botver import BOT_VERSION, deployed_at
 from .currency import convert as convert_currency, get_rates
 from .doomsday import get_doomsday
+from .fuel import get_fuel
 from .mercury import get_mercury
 from .moon import OMSK_LAT, OMSK_LON, get_moon
 from .sun import get_sun
@@ -108,6 +109,10 @@ HELP_INFO: dict[str, dict[str, str]] = {
         "icon": "🚗",
         "long": "🚗 /traffic - балл пробок в Омске (ngs55.ru).",
     },
+    "/fuel": {
+        "icon": "⛽",
+        "long": "⛽ /fuel - цены на бензин Газпром",
+    },
     "/rate": {
         "icon": "💱",
         "long": "💱 /rate (/kurs) - курсы USD/EUR/CNY/KZT к рублю по ЦБ РФ. /rate 65 USD - пересчёт суммы в рубли, /rate 65 USD EUR - в другую валюту.",
@@ -161,6 +166,8 @@ HELP_INFO: dict[str, dict[str, str]] = {
 # Алиасы команд -> основное имя, по которому ищется описание в HELP_INFO.
 _HELP_ALIASES: dict[str, str] = {
     "/kurs": "/rate",
+    "/gas": "/fuel",
+    "/benz": "/fuel",
     "/version": "/ver",
     "/versions": "/ver",
     "/luna": "/moon",
@@ -201,6 +208,11 @@ async def _helpex(ctx: Context) -> str | None:
 
 async def _traffic(ctx: Context) -> str | None:
     return await get_traffic_omsk()
+
+
+async def _fuel(ctx: Context) -> str | None:
+    fuel = ctx.config.get("fuel", {})
+    return await get_fuel(tz_offset=fuel.get("timezone_offset_hours", 6.0))
 
 
 async def _rate(ctx: Context) -> str | None:
@@ -386,6 +398,9 @@ COMMANDS: dict[str, Callable[..., Coroutine]] = {
     "/weather": _weather,
     "/weathernow": _weathernow,
     "/traffic": _traffic,
+    "/fuel": _fuel,
+    "/gas": _fuel,
+    "/benz": _fuel,
     "/rate": _rate,
     "/kurs": _rate,
     "/ver": _ver,

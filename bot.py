@@ -325,6 +325,10 @@ def load_settings():
         "openmeteo": {
             "proxy": os.environ.get("OPENMETEO_PROXY", "").strip() or None,
         },
+        # Часовой пояс для времени обновления цен в /fuel (API отдаёт UTC).
+        "fuel": {
+            "timezone_offset_hours": int(os.environ.get("WEATHER_TIMEZONE_OFFSET", "6")),
+        },
         # Ретрограда — геоцентрическое явление, одинаковое для всей Земли,
         # поэтому от места не зависит: нужен только часовой пояс вывода.
         "mercury": {
