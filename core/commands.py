@@ -424,8 +424,9 @@ COMMANDS: dict[str, Callable[..., Coroutine]] = {
 }
 
 # Команды, ответ на которые в канале уходит без обращения «@[отправитель]»:
-# ответ /ver — по строке на источник, и с обращением не влез бы в одно сообщение.
-UNADDRESSED_COMMANDS = {"/ver", "/version", "/versions"}
+# ответ /ver — по строке на источник, и с обращением не влез бы в одно сообщение;
+# список команд /help тоже упирается в лимит одного сообщения.
+UNADDRESSED_COMMANDS = {"/ver", "/version", "/versions", "/help"}
 
 
 def is_unaddressed(text: str) -> bool:
