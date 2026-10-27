@@ -12,6 +12,15 @@ logger = logging.getLogger(__name__)
 _URL = "https://ngs55.ru/maps-traffic/"
 _STATE_FILE = "traffic_last_score.txt"
 
+# С M18 соединение с ngs55.ru:443 примерно в трети попыток не устанавливается
+# (TCP connect висит до таймаута), остальные проходят за ~0.5 с — поэтому короткий
+# connect-таймаут и несколько попыток вместо одной на 10 с. В худшем случае
+# 3 × 3 с + 2 паузы ≈ 11 с.
+_ATTEMPTS = 3
+_RETRY_PAUSE_SECONDS = 1.0
+_TIMEOUT = aiohttp.ClientTimeout(total=8, connect=3)
+_HTML_SNIPPET_LEN = 300
+
 _ICONS = {"green": "🟢", "yellow": "🟡", "orange": "🟠", "red": "🔴"}
 
 _DESCRIPTIONS = [
@@ -46,21 +55,32 @@ async def _fetch_traffic_score() -> tuple[int, str] | str:
         "Cache-Control": "no-cache",
         "Pragma": "no-cache",
     }
-    # Уникальный query-параметр — чтобы CDN/прокси сайта не отдал закэшированную
-    # страницу вместо актуальной (заголовков no-cache недостаточно для чужого кэша).
-    params = {"_": str(int(datetime.now().timestamp() * 1000))}
-    try:
-        async with aiohttp.ClientSession(headers=headers) as session:
-            async with session.get(_URL, params=params, ssl=ssl_ctx, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                if resp.status != 200:
-                    return f"❌ ngs55.ru недоступен (код {resp.status})"
-                html = await resp.text()
-    except Exception as e:
-        return f"❌ Ошибка запроса: {e}"
+    html = None
+    reason = ""
+    for attempt in range(1, _ATTEMPTS + 1):
+        # Уникальный query-параметр — чтобы CDN/прокси сайта не отдал закэшированную
+        # страницу вместо актуальной (заголовков no-cache недостаточно для чужого кэша).
+        params = {"_": str(int(datetime.now().timestamp() * 1000))}
+        try:
+            async with aiohttp.ClientSession(headers=headers) as session:
+                async with session.get(_URL, params=params, ssl=ssl_ctx, timeout=_TIMEOUT) as resp:
+                    if resp.status != 200:
+                        return f"❌ ngs55.ru недоступен (код {resp.status})"
+                    html = await resp.text()
+            break
+        except Exception as e:
+            # У asyncio.TimeoutError str(e) пустой — в ответе и логе была бы «Ошибка запроса: ».
+            reason = "таймаут" if isinstance(e, asyncio.TimeoutError) else type(e).__name__
+            logger.warning(f"traffic: попытка {attempt}/{_ATTEMPTS} не удалась: {reason}: {e}")
+            if attempt < _ATTEMPTS:
+                await asyncio.sleep(_RETRY_PAUSE_SECONDS)
+    if html is None:
+        return f"❌ ngs55.ru не отвечает ({reason})"
 
     m = re.search(r'level_\w+\s+(green|yellow|orange|red)_\w+[^>]*>(\d+)<', html)
     if not m:
-        logger.warning("traffic: не найден балл в HTML")
+        snippet = re.sub(r"\s+", " ", html[:_HTML_SNIPPET_LEN])
+        logger.warning(f"traffic: не найден балл в HTML (длина {len(html)}): {snippet!r}")
         return "❌ Не удалось получить данные о пробках"
 
     color = m.group(1)
