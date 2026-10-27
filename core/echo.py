@@ -39,6 +39,11 @@ _TTL_SECONDS = 60
 
 _PREVIEW_CHARS = 30
 
+# Сколько ждать, что ретранслятор услышит сообщение (нода слышит его ретрансляцию;
+# по логам эхо приходит через 2.6–3.9 с), и сколько раз переотправить, если не услышал.
+_ECHO_WAIT_SECONDS = 6.0
+_ECHO_RETRIES = 1
+
 # Минимальный промежуток между отправками бота (канал, advert) от конца предыдущей.
 _SEND_GAP_SECONDS = 3.0
 
@@ -173,6 +178,74 @@ def _dst_hash(dst) -> str:
     if isinstance(dst, bytes):
         dst = dst.hex()
     return dst.lower() if isinstance(dst, str) and len(dst) >= 2 else ''
+
+
+async def send_until_heard(mc, channel_idx: int, message: str, *, label: str,
+                           target: str) -> bool:
+    """Отправка в канал с проверкой, что её услышал ретранслятор.
+
+    Признак — нода слышит ретрансляцию своего же пакета (RX_LOG_DATA с тем же
+    текстом и меткой времени и с непустым путём). Своя передача в RX_LOG не
+    попадает, так что эхо означает: пакет ушёл в эфир и его подхватила сеть.
+    Нет эха за `_ECHO_WAIT_SECONDS` — переотправка, не больше `_ECHO_RETRIES`
+    раз. Отсутствие эха не значит, что пакет не дошёл (нода могла не услышать
+    ретрансляцию), поэтому повторов немного — иначе в канале будут дубли.
+
+    Повтор — с новой меткой времени: пакет с прежней дал бы тот же хэш, и
+    ретрансляторы отбросили бы его как уже пересланный. Эхо любой из попыток
+    засчитывается, даже если пришло уже после повтора.
+
+    `label` и `target` — только для логов («Версия ommesh», «канал ссылок 4»).
+    Само эхо (путь, SNR) пишет в лог `OwnSends`, здесь — только номер попытки,
+    которую оно подтвердило.
+
+    Возвращает False, если нода не приняла сообщение или отправка не удалась.
+    """
+    expected = f"{mc.self_info.get('name', '')}: {message}"
+    attempts: dict[int, int] = {}  # sender_timestamp -> номер попытки
+    heard = asyncio.Event()
+
+    def on_rx_log(event):
+        rx_log = event.payload
+        attempt = attempts.get(rx_log.get('sender_timestamp'))
+        if (attempt is None or rx_log.get('payload_type') != _PAYLOAD_GRP_TXT
+                or rx_log.get('message') != expected or not rx_log.get('path')):
+            return
+        if not heard.is_set():
+            logger.info(f"📡 {label}: сообщение в {target} услышано ретранслятором "
+                        f"(попытка {attempt})")
+        heard.set()
+
+    subscription = mc.subscribe(events.EventType.RX_LOG_DATA, on_rx_log)
+    try:
+        for attempt in range(1, _ECHO_RETRIES + 2):
+            timestamp = max(int(time.time()), max(attempts, default=0) + 1)
+            attempts[timestamp] = attempt
+            try:
+                result = await mc.commands.send_chan_msg(channel_idx, message, timestamp=timestamp)
+            except Exception as e:
+                logger.error(f"📭 {label}: в {target} не отправлено (попытка {attempt}): ошибка {e}")
+                return False
+            if result is None or result.type == events.EventType.ERROR:
+                logger.error(f"📭 {label}: нода не приняла сообщение в {target} (попытка "
+                             f"{attempt}): {result.payload if result else 'нет ответа'}")
+                return False
+            logger.info(f"📤 {label}: отправлено в {target} (попытка {attempt}): {message}")
+            try:
+                await asyncio.wait_for(heard.wait(), _ECHO_WAIT_SECONDS)
+                return True
+            except asyncio.TimeoutError:
+                pass
+            if attempt <= _ECHO_RETRIES:
+                logger.warning(f"📡 {label}: за {_ECHO_WAIT_SECONDS:g} с ни один ретранслятор "
+                               f"не услышал сообщение в {target} (попытка {attempt}) — "
+                               f"отправляю повторно")
+            else:
+                logger.warning(f"📡 {label}: ретранслятор не услышал сообщение в {target} "
+                               f"и после {attempt} попыток — больше не повторяю")
+        return True
+    finally:
+        mc.unsubscribe(subscription)
 
 
 def track_own_sends(mc) -> OwnSends:

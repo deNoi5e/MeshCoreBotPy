@@ -15,7 +15,7 @@ from meshcore import MeshCore, SerialConnection, events
 
 from core.botver import BOT_VERSION, deployed_at
 from core.commands import dispatch, is_unaddressed
-from core.echo import track_own_sends
+from core.echo import send_until_heard, track_own_sends
 from core.contacts import (
     contacts_cleanup_scheduler,
     ensure_auto_add_contacts,
@@ -563,15 +563,11 @@ async def run_bot(mc: MeshCore, port: str, config: dict,
         await asyncio.sleep(10.0)
         config["_bot_ver_announced"] = True
         text = to_lat(f"🤖 Бот запущен, версия {BOT_VERSION} от {deployed_at():%d.%m}")
-        try:
-            result = await mc.commands.send_chan_msg(channel_idx, text)
-            if result is None or result.type == events.EventType.ERROR:
-                logger.error(f"❌ Нода не приняла версию бота для канала {channel_idx}: "
-                             f"{result.payload if result else 'нет ответа'}")
-            else:
-                logger.info(f"🤖 Версия бота {BOT_VERSION} отправлена в канал {channel_idx}: {text} ({result.type})")
-        except Exception as e:
-            logger.error(f"❌ Ошибка отправки версии бота в канал {channel_idx}: {e}")
+        # С проверкой эха и одной переотправкой: по логам 25–27.10 у 5 из 9 запусков
+        # нода отвечала OK, а ретранслятор пакет не услышал и в канал он не доходил.
+        if await send_until_heard(mc, channel_idx, text, label="Версия бота",
+                                  target=f"канал {channel_idx}"):
+            logger.info(f"🤖 Версия бота {BOT_VERSION} отправлена в канал {channel_idx}: {text}")
 
     async def advert_scheduler():
         await asyncio.sleep(5.0)
