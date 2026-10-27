@@ -22,6 +22,7 @@
 - advert: по публичному ключу бота, только flood — обычный (zero-hop) advert
   ретрансляторы не пересылают.
 """
+import asyncio
 import logging
 import time
 
@@ -37,6 +38,9 @@ _PAYLOAD_GRP_TXT = 5
 _TTL_SECONDS = 60
 
 _PREVIEW_CHARS = 30
+
+# Минимальный промежуток между отправками бота (канал, advert) от конца предыдущей.
+_SEND_GAP_SECONDS = 3.0
 
 
 class OwnSends:
@@ -106,11 +110,29 @@ class OwnSends:
         send_msg = commands.send_msg
         send_advert = commands.send_advert
 
+        # Все отправки бота — по одной и с паузой: шедулеры шлют независимо и при
+        # старте попадали в эфир пачкой (ретрансляторы слышали пакеты внахлёст, часть
+        # терялась), а параллельные команды библиотека не разводит — ответ ноды на одну
+        # засчитывался другой.
+        lock = asyncio.Lock()
+        last_sent_at = 0.0
+
+        async def paced(send, *args, gap=True, **kwargs):
+            nonlocal last_sent_at
+            async with lock:
+                wait = last_sent_at + _SEND_GAP_SECONDS - time.monotonic()
+                if gap and wait > 0:
+                    await asyncio.sleep(wait)
+                try:
+                    return await send(*args, **kwargs)
+                finally:
+                    last_sent_at = time.monotonic()
+
         async def tracked_send_chan_msg(chan, msg, timestamp=None):
             # Метка нужна для сопоставления — задаём её сами, как сделала бы библиотека.
             if timestamp is None:
                 timestamp = int(time.time())
-            result = await send_chan_msg(chan, msg, timestamp=timestamp)
+            result = await paced(send_chan_msg, chan, msg, timestamp=timestamp)
             if isinstance(timestamp, bytes):
                 timestamp = int.from_bytes(timestamp, "little")
             self._remember('chan', f"сообщение в канале {chan} «{_preview(msg)}»",
@@ -118,7 +140,8 @@ class OwnSends:
             return result
 
         async def tracked_send_msg(dst, msg, *args, **kwargs):
-            result = await send_msg(dst, msg, *args, **kwargs)
+            # Личка — без паузы: ACK и ответ идут подряд, как и раньше.
+            result = await paced(send_msg, dst, msg, *args, gap=False, **kwargs)
             dst_hash = _dst_hash(dst)
             if dst_hash:
                 contact = self._mc.get_contact_by_key_prefix(dst_hash) if len(dst_hash) > 2 else None
@@ -128,7 +151,7 @@ class OwnSends:
             return result
 
         async def tracked_send_advert(flood=False):
-            result = await send_advert(flood=flood)
+            result = await paced(send_advert, flood=flood)
             if flood:
                 self._remember('advert', "flood-advert бота")
             return result
