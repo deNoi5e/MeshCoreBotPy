@@ -55,6 +55,7 @@ class FakeNode:
         self.sessions = 0
         self.count: dict[int, int] = {}
         self.silent_cmd = 99          # на эту команду нода молчит (проверка таймаута)
+        self.fail_chan = False        # отправку в канал нода отклоняет (ERROR)
         self.up = None
 
     def make_upstream(self):
@@ -105,6 +106,8 @@ class FakeUpstream:
             self.emit(bytes([4]) + _u32(3000))
         elif cmd == 10:
             self.emit(node.queue.popleft() if node.queue else bytes([10]))
+        elif cmd == 3:
+            self.emit(bytes([1, 3]) if node.fail_chan else bytes([0]))
         elif cmd == 5:
             self.emit(bytes([9]) + _u32(1700000000))
         elif cmd == 19:
@@ -246,6 +249,27 @@ async def main() -> None:
           str(contacts.type))
     check("бот: send_chan_msg получил OK", sent.type == EventType.OK, str(sent))
     check("push посреди списка дошёл до приложения", any(p[0] == 0x88 for p in app.pushes))
+
+    print("5б. Ответ бота в канал виден приложению, но не боту")
+    await asyncio.sleep(0.2)
+    check("приложению пришёл MESSAGES_WAITING на ответ бота", any(p[0] == 0x83 for p in app.pushes))
+    frame = await app.request(bytes([10]))
+    check("кадр CHANNEL_MSG_RECV_V3: канал 0, «ИмяУзла: текст»",
+          frame[0] == 17 and frame[4] == 0 and msg_text(frame) == "fake: hello", str(frame))
+    check("дальше очередь приложения пуста", (await app.request(bytes([10])))[0] == 10)
+    check("бот копию своего сообщения не получил", not any("hello" in t for t in got), str(got))
+
+    print("5в. Отклонённое нодой и отправленное из приложения не зеркалируется")
+    node.fail_chan = True
+    r = await bot.commands.send_chan_msg(0, "rejected")
+    node.fail_chan = False
+    check("нода отклонила — боту ERROR", r.type == EventType.ERROR, str(r))
+    f = await app.request(bytes([3, 0, 0]) + _u32(1700000001) + b"from app")
+    check("команда приложения принята нодой", f[0] == 0)
+    await asyncio.sleep(0.3)
+    check("приложению ничего не пришло", (await app.request(bytes([10])))[0] == 10)
+    check("боту ничего не пришло",
+          not any("rejected" in t or "from app" in t for t in got), str(got))
 
     print("6. Нода промолчала — клиент получает ERROR, очередь не сбивается")
     mcmux._RESPONSE_TIMEOUT = 0.5

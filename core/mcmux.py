@@ -36,18 +36,24 @@ logger = logging.getLogger(__name__)
 
 # Команды (CommandType в meshcore/packets.py)
 CMD_APP_START = 1
+CMD_SEND_CHANNEL_TXT_MSG = 3
 CMD_GET_CONTACTS = 4
 CMD_SYNC_NEXT_MESSAGE = 10
 CMD_REBOOT = 19
 CMD_DEVICE_QUERY = 22
 
 # Ответы
+RESP_OK = 0
 RESP_ERROR = 1
 RESP_CONTACT_START = 2
 RESP_CONTACT = 3
 RESP_SELF_INFO = 5
 RESP_NO_MORE_MSGS = 10
 RESP_DEVICE_INFO = 13
+RESP_CHANNEL_MSG_V3 = 17
+# Имя узла в SELF_INFO — хвост кадра после 58 байт: код, 3 байта (тип, мощности),
+# публичный ключ 32, широта и долгота 8, 4 байта настроек, частота и полоса 8, SF и CR 2
+_SELF_INFO_NAME_OFFSET = 58
 # CONTACT_MSG_RECV, CHANNEL_MSG_RECV, их V3-варианты и CHANNEL_DATA_RECV
 MESSAGE_CODES = frozenset({7, 8, 16, 17, 27})
 
@@ -218,6 +224,7 @@ class Mux:
         self._lost: Optional[asyncio.Event] = None
         self._drain_event: Optional[asyncio.Event] = None
         self._device_info: Optional[bytes] = None
+        self._node_name: Optional[bytes] = None
         self.server: Optional[asyncio.AbstractServer] = None
 
     # ---- жизненный цикл ----
@@ -375,6 +382,9 @@ class Mux:
         if cmd == CMD_APP_START and ok:
             # Нода могла взять версию протокола из APP_START клиента — возвращаем v3.
             await self._refresh_device_info(inline=True)
+        if (ok and cmd == CMD_SEND_CHANNEL_TXT_MSG and client is not None and client.slot == "bot"
+                and job.frames and job.frames[0][0] == RESP_OK):
+            self._mirror_bot_channel_message(job.frame)
         self._finish_job(job, ok)
 
     async def _exchange(self, job: _Job) -> bool:
@@ -392,6 +402,8 @@ class Mux:
                     logger.warning(f"⚠️  Нода не ответила на команду {cmd} за {job.timeout:.0f} с")
                     return False
                 job.frames.append(frame)
+                if frame[0] == RESP_SELF_INFO and len(frame) > _SELF_INFO_NAME_OFFSET:
+                    self._node_name = frame[_SELF_INFO_NAME_OFFSET:].rstrip(b"\0")
                 if job.client is not None:
                     job.client.send_frame(frame)
                 # Список контактов — START, N × CONTACT, END; остальные команды отвечают одним кадром.
@@ -435,8 +447,29 @@ class Mux:
                 return
             self._store_message(frame)
 
-    def _store_message(self, frame: bytes) -> None:
+    def _mirror_bot_channel_message(self, command: bytes) -> None:
+        """Показать приложению сообщение в канал, которое отправил бот.
+
+        Нода входящими считает только чужие сообщения, а своё отправившему клиенту не возвращает:
+        приложение рисует то, что отправило само, но ответы бота (другой клиент той же ноды)
+        в нём иначе не видны. Поэтому по принятой нодой команде отправки собираем кадр
+        CHANNEL_MSG_RECV_V3 и кладём в слот приложения. Боту копию не отдаём: он принял бы
+        собственный ответ за входящее сообщение и мог бы обработать его как команду.
+        """
+        # Команда: код, тип текста, канал, метка времени (4), текст
+        if len(command) < 8 or not self._node_name:
+            return
+        # Нода при передаче сама приписывает перед текстом «ИмяУзла: » — так его увидят и все остальные.
+        text = self._node_name + b": " + command[7:]
+        # SNR 0, 2 зарезервированных байта, канал, путь 0 хопов, тип текста, метка времени
+        frame = (bytes([RESP_CHANNEL_MSG_V3, 0, 0, 0, command[2], 0, command[1]])
+                 + command[3:7] + text)
+        self._store_message(frame, only_slots=("app",))
+
+    def _store_message(self, frame: bytes, only_slots: Optional[tuple] = None) -> None:
         for slot, queue in self._slots.items():
+            if only_slots is not None and slot not in only_slots:
+                continue
             if len(queue) >= _SLOT_QUEUE_LIMIT:
                 queue.popleft()
                 if slot not in self._slot_lost:
@@ -445,7 +478,8 @@ class Mux:
                 self._slot_lost[slot] = self._slot_lost.get(slot, 0) + 1
             queue.append(frame)
         for client in self._clients:
-            client.send_frame(bytes([PUSH_MESSAGES_WAITING]))
+            if only_slots is None or client.slot in only_slots:
+                client.send_frame(bytes([PUSH_MESSAGES_WAITING]))
 
     # ---- клиенты ----
 
