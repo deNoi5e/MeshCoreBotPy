@@ -6,6 +6,7 @@
 """
 
 import asyncio
+import logging
 import os
 import sys
 from collections import deque
@@ -275,6 +276,29 @@ async def main() -> None:
     bot2 = await MeshCore.create_tcp("127.0.0.1", port)
     check("бот переподключился", bot2 is not None)
 
+    print("9. Переполнение слота: одно предупреждение, а не по строке на сообщение")
+    records: list[logging.LogRecord] = []
+
+    class Capture(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    capture = Capture()
+    logging.getLogger("core.mcmux").addHandler(capture)
+    mcmux._SLOT_QUEUE_LIMIT = 3
+    for i in range(6):
+        node.inject(f"o{i}")
+    await wait_for(lambda: len(node.queue) == 0)
+    await asyncio.sleep(0.2)
+    full = [r for r in records if r.levelno == logging.WARNING and "слота app" in r.getMessage()]
+    check("предупреждение о переполнении app ровно одно", len(full) == 1, f"{len(full)} шт.")
+    texts = await pull_all(app3)
+    check("осталось последние 3 сообщения", texts == ["o3", "o4", "o5"], str(texts))
+    summary = [r for r in records if "Слот app" in r.getMessage() and "вытеснено" in r.getMessage()]
+    check("итог одной строкой с числом потерянных", len(summary) == 1 and summary[0].getMessage().endswith(": 3"),
+          str([r.getMessage() for r in summary]))
+    logging.getLogger("core.mcmux").removeHandler(capture)
+
     await app3.close()
     await bot2.disconnect()
     mux_task.cancel()
@@ -282,7 +306,6 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    import logging
     logging.basicConfig(level=logging.INFO, format="      [mux] %(message)s")
     asyncio.run(asyncio.wait_for(main(), 60))
     print()

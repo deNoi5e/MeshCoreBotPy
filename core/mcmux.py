@@ -207,6 +207,9 @@ class Mux:
         # Очереди сообщений живут дольше сессии с нодой: перезагрузка ноды не должна
         # стирать то, что приложение ещё не забрало.
         self._slots: dict[str, deque] = {"bot": deque(), "app": deque()}
+        # Сколько сообщений слот вытеснил в текущем переполнении: в лог — одна строка
+        # в начале и одна в конце, а не по строке на каждое сообщение.
+        self._slot_lost: dict[str, int] = {}
         # Состояние текущей сессии с нодой (None/пусто между сессиями)
         self._upstream: Optional[Upstream] = None
         self._ready = False
@@ -357,6 +360,10 @@ class Mux:
         if client is not None and cmd == CMD_SYNC_NEXT_MESSAGE:
             queue = self._slots[client.slot]
             client.send_frame(queue.popleft() if queue else bytes([RESP_NO_MORE_MSGS]))
+            lost = self._slot_lost.get(client.slot)
+            if lost and len(queue) < _SLOT_QUEUE_LIMIT:
+                del self._slot_lost[client.slot]
+                logger.info(f"📭 Слот {client.slot}: за время переполнения вытеснено сообщений: {lost}")
             self._finish_job(job, ok=True)
             return
         if client is not None and cmd == CMD_DEVICE_QUERY and self._device_info is not None:
@@ -432,7 +439,10 @@ class Mux:
         for slot, queue in self._slots.items():
             if len(queue) >= _SLOT_QUEUE_LIMIT:
                 queue.popleft()
-                logger.warning(f"⚠️  Очередь слота {slot} переполнена — вытеснено самое старое сообщение")
+                if slot not in self._slot_lost:
+                    logger.warning(f"⚠️  Очередь слота {slot} переполнена ({_SLOT_QUEUE_LIMIT}) — "
+                                   f"самые старые сообщения вытесняются")
+                self._slot_lost[slot] = self._slot_lost.get(slot, 0) + 1
             queue.append(frame)
         for client in self._clients:
             client.send_frame(bytes([PUSH_MESSAGES_WAITING]))
