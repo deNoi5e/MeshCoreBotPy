@@ -11,7 +11,7 @@ import traceback
 from datetime import datetime
 
 from dotenv import load_dotenv
-from meshcore import MeshCore, SerialConnection, events
+from meshcore import MeshCore, SerialConnection, TCPConnection, events
 
 from core.botver import BOT_VERSION, deployed_at
 from core.commands import dispatch, is_unaddressed
@@ -413,7 +413,14 @@ async def open_device(port: str) -> MeshCore:
     # бросает исключение (порта нет в системе), её не останавливает — а объект
     # MeshCore create_serial() нам уже не вернёт. Задача висит, пока сборщик
     # мусора не удалит её с «Task was destroyed but it is pending!».
-    mc = MeshCore(SerialConnection(port, 115200, cx_dly=0.1))
+    # tcp://host:port — нода за мультиплексором (mux.py), а не напрямую по COM-порту.
+    is_tcp = port.startswith("tcp://")
+    if is_tcp:
+        host, _, tcp_port = port[len("tcp://"):].rpartition(":")
+        cx = TCPConnection(host, int(tcp_port))
+    else:
+        cx = SerialConnection(port, 115200, cx_dly=0.1)
+    mc = MeshCore(cx)
     try:
         if await mc.connect() is None:
             raise ConnectionError("устройство не ответило на APP_START")
@@ -424,7 +431,7 @@ async def open_device(port: str) -> MeshCore:
         except Exception as e:
             logger.warning(f"⚠️  Ошибка при освобождении порта после неудачного подключения: {e!r}")
         raise
-    if platform.system() == "Linux":
+    if platform.system() == "Linux" and not is_tcp:
         await mc.connect()
     return mc
 
