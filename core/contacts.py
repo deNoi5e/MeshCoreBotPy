@@ -35,6 +35,9 @@ _AUTO_ADD_TYPE_BITS = (
 )
 
 _CONTACT_TYPES = {1: "companion", 2: "repeater", 3: "room server", 4: "sensor"}
+_TYPE_COMPANION = 1
+# Публичные каналы, о которых сообщает приветствие новому компаньону.
+_WELCOME_CHANNELS = "#bot, #soft, #techchat"
 
 # Часы ноды, расходящиеся с компьютером сильнее этого, отмечаем в логе.
 _CLOCK_DRIFT_WARN_SECONDS = 3600
@@ -158,11 +161,30 @@ async def _announce_new_contacts(mc, channel_idx: int, contacts: list[dict]) -> 
             logger.error(f"   ❌ Не удалось сообщить в канал {channel_idx} о новом контакте: {e!r}")
 
 
+async def _welcome_new_companions(mc, channel_idx: int, contacts: list[dict]) -> None:
+    """Приветствует в канале новые ноды-компаньоны и подсказывает публичные каналы.
+
+    Текст по-английски и короткий — экономия эфира.
+    """
+    for n, contact in enumerate(contacts):
+        if n:
+            await asyncio.sleep(2.0)
+        name = contact.get("adv_name") or "?"
+        text = to_lat(f"Welcome, @[{name}]! Public channels: {_WELCOME_CHANNELS}")
+        try:
+            await mc.commands.send_chan_msg(channel_idx, text)
+            logger.info(f"   👋 Приветствие в канал {channel_idx}: {text}")
+        except Exception as e:
+            logger.error(f"   ❌ Не удалось отправить приветствие в канал {channel_idx}: {e!r}")
+
+
 def subscribe_contact_events(mc, max_contacts: int | None,
-                             announce_channel_idx: int | None = None) -> None:
+                             announce_channel_idx: int | None = None,
+                             welcome_channel_idx: int | None = None) -> None:
     """Логирует добавление контактов и переполнение памяти контактов на ноде.
 
     Если задан announce_channel_idx, о каждом новом контакте сообщается в этот канал.
+    Если задан welcome_channel_idx, новому компаньону там уходит приветствие.
     """
     # CONTACTS_FULL приходит без данных — какой узел не влез, видно только по
     # предшествующему NEW_CONTACT (прошивка шлёт его прямо перед CONTACTS_FULL).
@@ -193,6 +215,11 @@ def subscribe_contact_events(mc, max_contacts: int | None,
             )
         if added and announce_channel_idx is not None:
             task = asyncio.create_task(_announce_new_contacts(mc, announce_channel_idx, added))
+            announce_tasks.add(task)
+            task.add_done_callback(announce_tasks.discard)
+        companions = [c for c in added if c.get("type") == _TYPE_COMPANION]
+        if companions and welcome_channel_idx is not None:
+            task = asyncio.create_task(_welcome_new_companions(mc, welcome_channel_idx, companions))
             announce_tasks.add(task)
             task.add_done_callback(announce_tasks.discard)
 

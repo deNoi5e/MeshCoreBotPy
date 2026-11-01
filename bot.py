@@ -362,6 +362,10 @@ def load_settings():
         "contacts_new_channel_idx": (int(os.environ["CONTACTS_NEW_CHANNEL_IDX"])
                                      if os.environ.get("CONTACTS_NEW_CHANNEL_IDX", "").strip()
                                      else None),
+        # Канал, куда уходит приветствие новой ноде-компаньону (Public — 0). Не задан — без приветствия.
+        "contacts_welcome_channel_idx": (int(os.environ["CONTACTS_WELCOME_CHANNEL_IDX"])
+                                         if os.environ.get("CONTACTS_WELCOME_CHANNEL_IDX", "").strip()
+                                         else None),
         # Канал, куда бот сообщает свою версию при запуске. Не задан — только лог.
         "bot_ver_channel_idx": (int(os.environ["BOT_VER_CHANNEL"])
                                 if os.environ.get("BOT_VER_CHANNEL", "").strip()
@@ -539,7 +543,8 @@ async def run_bot(mc: MeshCore, port: str, config: dict,
     logger.info("=" * 50 + "\n")
 
     await ensure_auto_add_contacts(mc)
-    subscribe_contact_events(mc, max_contacts, config["contacts_new_channel_idx"])
+    subscribe_contact_events(mc, max_contacts, config["contacts_new_channel_idx"],
+                             config["contacts_welcome_channel_idx"])
     # До запуска корутин: отправки любого модуля попадут в лог эха ретрансляторов.
     own_sends = track_own_sends(mc)
 
