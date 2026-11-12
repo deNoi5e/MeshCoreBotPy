@@ -25,7 +25,11 @@
     `releases/latest` отдаёт 404 и фильтр prerelease для него отключён. Список
     релизов GitHub отдаёт не в хронологическом порядке (сборки 100+ стоят
     ниже `dev.99`), поэтому свежайший релиз выбирается по `published_at` —
-    это же правило действует и для EasySkyMesh и YaziFW.
+    это же правило действует и для EasySkyMesh, YaziFW и MeshCore-rs;
+  * прошивка MeshCore-rs (`cm4ker/meshcore-rs`) — переписанная на Rust.
+    Почти все релизы — dev-сборки (prerelease), по нескольку в день, поэтому
+    фильтр prerelease отключён. Версия — из названия релиза до скобок
+    (`0.8.7-dev.18 (release #123, dev)` -> `0.8.7-dev.18`).
 
 Релизы MeshCore выходят раз в недели, поэтому результат кэшируется на
 6 часов — у GitHub API без токена лимит 60 запросов в час на IP.
@@ -50,6 +54,7 @@ _MESHCORE_REPO = "meshcore-dev/MeshCore"
 _EASYSKYMESH_REPO = "IoTThinks/EasySkyMesh"
 _OMMESH_REPO = "cm4ker/ommesh"
 _YAZIFW_REPO = "YaziAranea/MeshCore"
+_MESHCORERS_REPO = "cm4ker/meshcore-rs"
 _APP_CHANGELOG = "https://app.meshcore.nz/assets/CHANGELOG.md"
 # Ссылка на скачивание приложения для рассылки: у него нет релизов на GitHub,
 # а сборки для всех платформ нумеруются синхронно — даём Google Play.
@@ -119,8 +124,8 @@ async def _firmware_versions() -> dict[str, tuple[str, str, str]]:
     return {label: found[label] for label in _FW_KINDS.values() if label in found}
 
 
-async def _latest_release(repo: str, *, allow_prerelease: bool = False) -> tuple[str, str, str]:
-    """Тег, дата и ссылка самого свежего релиза репозитория — по `published_at`.
+async def _newest_release(repo: str, *, allow_prerelease: bool = False) -> dict:
+    """Самый свежий релиз репозитория — по `published_at`.
 
     Не `releases/latest`: он отдаёт 404 у репозиториев, где все релизы
     помечены prerelease (случай `cm4ker/ommesh`). И не «первый в списке»:
@@ -137,27 +142,50 @@ async def _latest_release(repo: str, *, allow_prerelease: bool = False) -> tuple
     if not candidates:
         raise RuntimeError("подходящих релизов нет")
     # ISO 8601 в UTC (`2026-09-26T16:07:20Z`) сравнивается как строка.
-    newest = max(candidates, key=lambda r: r["published_at"])
+    return max(candidates, key=lambda r: r["published_at"])
+
+
+async def _latest_release(repo: str, *, allow_prerelease: bool = False) -> tuple[str, str, str]:
+    """Тег, дата и ссылка самого свежего релиза репозитория (`_newest_release()`)."""
+    newest = await _newest_release(repo, allow_prerelease=allow_prerelease)
     return (newest.get("tag_name", ""), _short_date(newest["published_at"]),
             _release_url(newest, repo))
 
 
+def _easysky_version_from_tag(tag: str) -> str:
+    """`PowerSaving17.1` -> `17.1`: «PS» стоит в имени источника (`EasySkyPS`).
+
+    Идемпотентна и понимает прежний вид `PS 17.1` — ею же приводятся версии
+    из файлов состояния, записанных до смены формата (`_VERSION_NORMALIZERS`).
+    """
+    for prefix in ("PowerSaving", "PS "):
+        if tag.startswith(prefix):
+            return tag[len(prefix):]
+    return tag
+
+
+# `0.12.1-dev.382.1` — хвост `.1` после номера dev-сборки в выводе лишний.
+_OMMESH_BUILD_SUFFIX = re.compile(r"(-dev\.\d+)\.\d+$")
+
+
+def _ommesh_version_from_tag(tag: str) -> str:
+    """`dev-0.12.1-dev.382.1` -> `0.12.1-dev.382`: без префикса ветки `dev-`
+    и без последнего номера после номера сборки. Идемпотентна — см.
+    `_easysky_version_from_tag()`."""
+    tag = tag.removeprefix("dev-")
+    return _OMMESH_BUILD_SUFFIX.sub(r"\1", tag)
+
+
 async def _easyskymesh_version() -> tuple[str, str, str]:
-    # Теги вида `PowerSaving17.1` — не семвер, отдаём как есть, только
-    # разделяя слово и номер, чтобы читалось как версия.
+    # Теги вида `PowerSaving17.1` — не семвер.
     tag, day, url = await _latest_release(_EASYSKYMESH_REPO)
-    if tag.startswith("PowerSaving"):
-        tag = f"PS {tag[len('PowerSaving'):]}"
-    return tag, day, url
+    return _easysky_version_from_tag(tag), day, url
 
 
 async def _ommesh_version() -> tuple[str, str, str]:
     # Стабильных релизов у репозитория нет вовсе — все prerelease.
     tag, day, url = await _latest_release(_OMMESH_REPO, allow_prerelease=True)
-    # `dev-0.3.0-dev.105.1` -> `0.3.0-dev.105.1`: префикс ветки в версии лишний.
-    if tag.startswith("dev-"):
-        tag = tag[len("dev-"):]
-    return tag, day, url
+    return _ommesh_version_from_tag(tag), day, url
 
 
 async def _yazifw_version() -> tuple[str, str, str]:
@@ -168,6 +196,20 @@ async def _yazifw_version() -> tuple[str, str, str]:
     if tag.startswith("smartui-"):
         tag = tag[len("smartui-"):]
     return tag, day, url
+
+
+async def _meshcorers_version() -> tuple[str, str, str]:
+    # Версия — из названия релиза до скобок: `0.8.7-dev.18 (release #123, dev)`
+    # -> `0.8.7-dev.18`. В теге (`v0.8.7-dev.18-r123`) вдобавок номер сборки.
+    # Почти все релизы — dev-сборки с пометкой prerelease, по нескольку в день;
+    # стабильные (`0.8.6 (release #76, stable)`) — редко, берём свежайший любой.
+    release = await _newest_release(_MESHCORERS_REPO, allow_prerelease=True)
+    name = (release.get("name") or "").split("(", 1)[0].strip()
+    if not name:
+        # Название пустое — версия из тега без `v` в начале.
+        name = release.get("tag_name", "").removeprefix("v")
+    return (name, _short_date(release["published_at"]),
+            _release_url(release, _MESHCORERS_REPO))
 
 
 # `## v1.50.0 - 25/September/2026` — заголовок версии в CHANGELOG приложения.
@@ -244,8 +286,9 @@ async def _meshcore_version() -> tuple[str, str, str]:
 # Порядок задаёт порядок строк в ответе `/ver`.
 SOURCES: dict[str, tuple[str, str, object]] = {
     "meshcore": ("📟", "MeshCore", _meshcore_version),
-    "easyskymesh": ("📟", "EasySky", _easyskymesh_version),
+    "easyskymesh": ("📟", "EasySkyPS", _easyskymesh_version),
     "yazifw": ("📟", "YaziFW", _yazifw_version),
+    "meshcorers": ("📟", "RS", _meshcorers_version),
     "app": ("📱", "App", _app_version),
     "ommesh": ("📱", "Ommesh", _ommesh_version),
 }
@@ -344,6 +387,16 @@ _SHORTENERS = (
 _short_urls: dict[str, str] = {}
 
 
+# Источники, у которых менялся вид версии: сохранённое значение приводится к
+# новому виду при чтении файла состояния, иначе первая же проверка после
+# обновления бота приняла бы старую запись (`PS 18`, `0.12.1-dev.382.1`) за
+# другую версию и разослала ложное «🆕 … (было …)».
+_VERSION_NORMALIZERS = {
+    "easyskymesh": _easysky_version_from_tag,
+    "ommesh": _ommesh_version_from_tag,
+}
+
+
 def _state_file(key: str) -> str:
     return _STATE_FILE_TEMPLATE.format(key=key)
 
@@ -358,6 +411,9 @@ def _load_last_version(key: str) -> tuple[str | None, datetime | None]:
         version = lines[0].strip() if lines else ""
         if not version:
             return None, None
+        normalize = _VERSION_NORMALIZERS.get(key)
+        if normalize:
+            version = normalize(version)
         sent_at = None
         if len(lines) > 1 and lines[1].strip():
             try:

@@ -119,7 +119,11 @@ HELP_INFO: dict[str, dict[str, str]] = {
     },
     "/ver": {
         "icon": "🆕",
-        "long": "🆕 /ver (/version) - свежие версии прошивок MeshCore, EasySkyMesh, YaziFW и приложений.",
+        "long": "🆕 /ver (/version) - свежие версии прошивок MeshCore, EasySkyMesh, YaziFW, MeshCore-rs и приложений.",
+    },
+    "/botver": {
+        "icon": "🤖",
+        "long": "🤖 /botver - версия самого бота и дата её запуска.",
     },
     "/moon": {
         "icon": "🌔",
@@ -222,9 +226,13 @@ async def _rate(ctx: Context) -> str | None:
 
 
 async def _ver(ctx: Context) -> str | None:
-    # Версия самого бота — первой строкой; короткая подпись, чтобы остальные
-    # строки по-прежнему влезали в одно сообщение.
-    return f"Bot {BOT_VERSION} {deployed_at():%d.%m}\n{await get_latest_versions()}"
+    return await get_latest_versions()
+
+
+async def _botver(ctx: Context) -> str | None:
+    # Версия самого бота — отдельной командой: в ответе /ver на неё не хватает
+    # места в одном сообщении.
+    return f"🤖 Бот {BOT_VERSION} от {deployed_at():%d.%m.%Y}"
 
 
 async def _moon(ctx: Context) -> str | None:
@@ -406,6 +414,7 @@ COMMANDS: dict[str, Callable[..., Coroutine]] = {
     "/ver": _ver,
     "/version": _ver,
     "/versions": _ver,
+    "/botver": _botver,
     "/moon": _moon,
     "/luna": _moon,
     "/mercury": _mercury,
