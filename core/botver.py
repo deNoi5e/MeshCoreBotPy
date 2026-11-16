@@ -8,7 +8,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-BOT_VERSION = "1.15"
+BOT_VERSION = "1.16"
 
 # Версия и момент её первого запуска на этой машине (две строки). Не в git.
 _STATE_FILE = Path(__file__).resolve().parent.parent / "bot_version_deployed.txt"
