@@ -37,7 +37,7 @@ _AUTO_ADD_TYPE_BITS = (
 _CONTACT_TYPES = {1: "companion", 2: "repeater", 3: "room server", 4: "sensor"}
 _TYPE_COMPANION = 1
 # Публичные каналы, о которых сообщает приветствие новому компаньону.
-_WELCOME_CHANNELS = "#bot, #soft, #techchat"
+_WELCOME_CHANNELS = "#bot, #soft, #techchat, #flood"
 
 # Часы ноды, расходящиеся с компьютером сильнее этого, отмечаем в логе.
 _CLOCK_DRIFT_WARN_SECONDS = 3600
