@@ -18,7 +18,12 @@
   приложение, подключившееся утром, получит накопленное за ночь.
 - Агент ommesh подключается на отдельный порт (agent_port): слот `agent` определяется
   портом, а не адресом. Сообщений он не получает (только push-кадры и ответы на свои
-  команды), а его команды пишутся в лог — чтобы по ним решить, что агенту разрешать.
+  команды). Параметры его заданий приходят от сервера Ommesh, поэтому на ноду пускаются только
+  нужные ему команды (белый список с потолками длины, лимиты частоты эфирных команд и advert,
+  правка контактов — только репитеров, подпись — только кода сервера с префиксом агента);
+  остальное отвечается ERROR и пишется в лог.
+- Кадр клиента недопустимой длины отключает клиента (строгий разбор): иначе байты внутри
+  слишком длинного кадра, ресинхронизацией, превратились бы во вложенную команду.
 - DEVICE_QUERY мультиплексор отвечает сам из кэша, а ноду держит на протоколе v3
   (сообщения в формате *_V3, с SNR): версию в ноде хранит одно значение, и клиент
   с другой версией иначе переключил бы формат кадров всем.
@@ -45,9 +50,21 @@ _CMD_NAMES = {c.value: c.name for c in CommandType}
 CMD_APP_START = 1
 CMD_SEND_CHANNEL_TXT_MSG = 3
 CMD_GET_CONTACTS = 4
+CMD_GET_DEVICE_TIME = 5
+CMD_SET_DEVICE_TIME = 6
+CMD_SEND_SELF_ADVERT = 7
+CMD_ADD_UPDATE_CONTACT = 9
 CMD_SYNC_NEXT_MESSAGE = 10
 CMD_REBOOT = 19
 CMD_DEVICE_QUERY = 22
+CMD_SEND_LOGIN = 26
+CMD_SEND_STATUS_REQ = 27
+CMD_SIGN_START = 33
+CMD_SIGN_DATA = 34
+CMD_SIGN_FINISH = 35
+CMD_SEND_TRACE_PATH = 36
+CMD_SEND_BINARY_REQ = 50
+CMD_SEND_CONTROL_DATA = 55
 
 # Ответы
 RESP_OK = 0
@@ -85,6 +102,43 @@ _JOBS_LIMIT = 64             # команд в очереди; больше — 
 _AGENT_REPORT_SECONDS = 1800  # как часто в лог идёт сводка команд агента
 _MAX_WRITE_BUFFER = 1 << 20  # клиент, не читающий больше 1 МБ, отключается
 _ERROR_FRAME = bytes([RESP_ERROR, 4])  # ERR_CODE_BAD_STATE
+_DENIED_FRAME = bytes([RESP_ERROR, 1])  # ERR_CODE_UNSUPPORTED_CMD: мультиплексор команду не пропустил
+
+# --- Что можно агенту ommesh ---
+# Агент выполняет задания сервера Ommesh, а параметры заданий (пути, пароли, ключи контактов, длины)
+# приходят от сервера и агентом почти не проверяются. Поэтому на ноду пропускаются только команды,
+# которыми агент и пользуется (по логу мультиплексора), каждая — с потолком длины кадра.
+_AGENT_ALLOWED: dict[int, int] = {
+    CMD_APP_START: 64,
+    CMD_GET_CONTACTS: 5,
+    CMD_GET_DEVICE_TIME: 1,
+    CMD_SET_DEVICE_TIME: 5,
+    CMD_SEND_SELF_ADVERT: 2,
+    CMD_ADD_UPDATE_CONTACT: 148,   # 144 байта + необязательные lastmod
+    CMD_SYNC_NEXT_MESSAGE: 1,
+    CMD_DEVICE_QUERY: 2,
+    CMD_SEND_LOGIN: 65,            # ключ 32 + пароль
+    CMD_SEND_STATUS_REQ: 33,
+    CMD_SIGN_START: 1,
+    CMD_SIGN_DATA: 31,             # префикс 14 + код 16, см. _PROOF_PREFIX
+    CMD_SIGN_FINISH: 1,
+    CMD_SEND_TRACE_PATH: 74,       # 10 байт заголовка + путь не длиннее 64 (MAX_PATH_SIZE)
+    CMD_SEND_BINARY_REQ: 64,
+    CMD_SEND_CONTROL_DATA: 24,
+}
+# Подпись агент даёт только над «OMMESH-AGENT\0\x01» + 16 байт кода сервера: это доказательство
+# владения нодой, а не подпись произвольных данных ключом ноды.
+_PROOF_PREFIX = b"OMMESH-AGENT\0\x01"
+_ADV_TYPE_REPEATER = 2
+_CONTACT_KIND_OFFSET = 33          # в ADD_UPDATE_CONTACT: код, ключ 32 байта, затем тип узла
+_ADD_UPDATE_CONTACT_MIN = 144
+# Команды, которые уходят в эфир по заданию сервера: их частота ограничена, чтобы сервер не мог
+# забить эфир и очередь ноды трассировками и входами на репитеры.
+_AGENT_AIR_CMDS = frozenset({CMD_SEND_LOGIN, CMD_SEND_STATUS_REQ, CMD_SEND_TRACE_PATH,
+                             CMD_SEND_BINARY_REQ, CMD_SEND_CONTROL_DATA})
+_AGENT_AIR_LIMIT = 30              # не больше стольких за окно (опрос одного репитера — до ~9)
+_AGENT_AIR_WINDOW = 60.0           # окно, с
+_AGENT_ADVERT_MIN_SECONDS = 300.0  # flood-advert ноды — не чаще раза в 5 минут
 
 
 def _frame(marker: bytes, payload: bytes) -> bytes:
@@ -92,17 +146,25 @@ def _frame(marker: bytes, payload: bytes) -> bytes:
 
 
 class _FrameParser:
-    """Разбор потока кадров `<marker> + длина LE16 + payload` с ресинхронизацией."""
+    """Разбор потока кадров `<marker> + длина LE16 + payload` с ресинхронизацией.
 
-    def __init__(self, marker: bytes):
+    strict — для клиентов: кадр недопустимой длины не пропускается с поиском следующего маркера,
+    а останавливает разбор (`error`), и клиента отключают. Иначе тот, кто может подбирать байты
+    внутри слишком длинного кадра (путь трассировки агента приходит от сервера Ommesh), вложил
+    бы туда кадр любой команды: после ресинхронизации он разобрался бы как отдельный.
+    """
+
+    def __init__(self, marker: bytes, strict: bool = False):
         self._marker = marker
+        self._strict = strict
         self._buf = bytearray()
+        self.error: Optional[str] = None
 
     def feed(self, data: bytes) -> list[bytes]:
         self._buf += data
         out: list[bytes] = []
         buf = self._buf
-        while True:
+        while self.error is None:
             start = buf.find(self._marker)
             if start < 0:
                 buf.clear()
@@ -113,6 +175,10 @@ class _FrameParser:
                 break
             size = int.from_bytes(buf[1:3], "little")
             if size == 0 or size > _MAX_FRAME:
+                if self._strict:
+                    self.error = f"недопустимая длина кадра {size}"
+                    buf.clear()
+                    break
                 del buf[0]
                 continue
             if len(buf) < 3 + size:
@@ -196,7 +262,7 @@ class _Client:
             self.writer.close()
 
     async def serve(self) -> None:
-        parser = _FrameParser(b"<")
+        parser = _FrameParser(b"<", strict=True)
         try:
             while True:
                 data = await self.reader.read(4096)
@@ -204,6 +270,9 @@ class _Client:
                     break
                 for payload in parser.feed(data):
                     self.mux.on_client_frame(self, payload)
+                if parser.error:
+                    logger.warning(f"🔌 Клиент {self.peer} ({self.slot}): {parser.error} — отключаю")
+                    break
         except (ConnectionError, OSError) as e:
             logger.info(f"🔌 Клиент {self.peer}: обрыв соединения ({e!r})")
         finally:
@@ -223,6 +292,11 @@ class Mux:
         self._agent_port = agent_port
         self.agent_server: Optional[asyncio.AbstractServer] = None
         self._agent_cmds: dict[int, int] = {}
+        # Что агенту не разрешено: счётчик по коду команды и причины, о которых уже писали в лог.
+        self._agent_denied: dict[int, int] = {}
+        self._agent_denied_logged: set[tuple[int, str]] = set()
+        self._agent_air: deque = deque()          # моменты эфирных команд агента в текущем окне
+        self._agent_last_advert = float("-inf")   # когда агенту последний раз разрешили advert
         self._reconnect_delay = reconnect_delay
         self._clients: list[_Client] = []
         # Очереди сообщений живут дольше сессии с нодой: перезагрузка ноды не должна
@@ -562,11 +636,50 @@ class Mux:
             logger.info(f"🛰 Агент: первая команда {cmd} ({_CMD_NAMES.get(cmd, '?')}), "
                         f"{len(payload)} байт: {payload[:24].hex()}{tail}")
 
+    def _agent_denied_reason(self, payload: bytes) -> Optional[str]:
+        """Почему команду агента на ноду не пускаем (None — пускаем). Вызывается один раз на кадр:
+        разрешённая эфирная команда сразу занимает место в окне частоты."""
+        cmd = payload[0]
+        limit = _AGENT_ALLOWED.get(cmd)
+        if limit is None:
+            return "команда агенту не разрешена"
+        if len(payload) > limit:
+            return f"кадр длиннее {limit} байт"
+        if cmd == CMD_ADD_UPDATE_CONTACT and (len(payload) < _ADD_UPDATE_CONTACT_MIN
+                                              or payload[_CONTACT_KIND_OFFSET] != _ADV_TYPE_REPEATER):
+            return "менять можно только репитеры (полный кадр контакта)"
+        if cmd == CMD_SIGN_DATA and (len(payload) != _AGENT_ALLOWED[CMD_SIGN_DATA]
+                                     or payload[1:1 + len(_PROOF_PREFIX)] != _PROOF_PREFIX):
+            return "подписывать можно только код сервера с префиксом OMMESH-AGENT"
+        now = asyncio.get_running_loop().time()
+        if cmd == CMD_SEND_SELF_ADVERT:
+            if now - self._agent_last_advert < _AGENT_ADVERT_MIN_SECONDS:
+                return f"advert чаще раза в {_AGENT_ADVERT_MIN_SECONDS:.0f} с"
+            self._agent_last_advert = now
+        elif cmd in _AGENT_AIR_CMDS:
+            air = self._agent_air
+            while air and now - air[0] > _AGENT_AIR_WINDOW:
+                air.popleft()
+            if len(air) >= _AGENT_AIR_LIMIT:
+                return f"больше {_AGENT_AIR_LIMIT} эфирных команд за {_AGENT_AIR_WINDOW:.0f} с"
+            air.append(now)
+        return None
+
+    def _note_agent_denied(self, cmd: int, reason: str) -> None:
+        self._agent_denied[cmd] = self._agent_denied.get(cmd, 0) + 1
+        # Одна строка на пару «команда — причина»: остальные только в сводке, иначе лог зальёт заданием в цикле.
+        if (cmd, reason) not in self._agent_denied_logged:
+            self._agent_denied_logged.add((cmd, reason))
+            logger.warning(f"🛰 Агенту отказано: команда {cmd} ({_CMD_NAMES.get(cmd, '?')}) — {reason}")
+
     def _log_agent_summary(self) -> None:
         if not self._agent_cmds:
             return
         parts = ", ".join(f"{_CMD_NAMES.get(c, c)}={n}" for c, n in sorted(self._agent_cmds.items()))
         logger.info(f"🛰 Агент, команд с начала работы мультиплексора: {parts}")
+        if self._agent_denied:
+            denied = ", ".join(f"{_CMD_NAMES.get(c, c)}={n}" for c, n in sorted(self._agent_denied.items()))
+            logger.info(f"🛰 Агенту отказано (из них): {denied}")
 
     async def _agent_report_loop(self) -> None:
         while True:
@@ -577,6 +690,11 @@ class Mux:
         cmd = payload[0]
         if client.slot == "agent":
             self._note_agent_command(payload)
+            reason = self._agent_denied_reason(payload)
+            if reason is not None:
+                self._note_agent_denied(cmd, reason)
+                client.send_frame(_DENIED_FRAME)
+                return
         if cmd in (CMD_APP_START, CMD_DEVICE_QUERY) and len(payload) > 1:
             logger.info(f"📱 {client.peer}: команда {cmd}, версия протокола клиента {payload[1]}")
         if self._jobs is None or self._jobs.qsize() >= _JOBS_LIMIT:

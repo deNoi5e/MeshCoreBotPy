@@ -56,6 +56,7 @@ class FakeNode:
         self.count: dict[int, int] = {}
         self.silent_cmd = 99          # на эту команду нода молчит (проверка таймаута)
         self.fail_chan = False        # отправку в канал нода отклоняет (ERROR)
+        self.fail_cmd = None          # эту команду нода отклоняет (ERROR)
         self.up = None
 
     def make_upstream(self):
@@ -114,6 +115,8 @@ class FakeUpstream:
             asyncio.get_running_loop().call_later(0.05, lambda: asyncio.create_task(self.on_lost("serial_disconnect")))
         elif cmd == node.silent_cmd:
             pass
+        elif cmd == node.fail_cmd:
+            self.emit(bytes([1, 3]))
         else:
             self.emit(bytes([0]))
 
@@ -349,10 +352,10 @@ async def main() -> None:
     first = [r.getMessage() for r in records if "Агент: первая команда 36" in r.getMessage()]
     check("первая команда агента в логе ровно один раз, с именем", len(first) == 1 and "SEND_TRACE_PATH" in first[0],
           str(first))
-    node.fail_chan = True
-    f = await agent.request(bytes([3, 0, 0]) + _u32(1700000002) + b"agent text")
-    node.fail_chan = False
-    check("ERROR ноды агенту и в лог", f[0] == 1 and any("ERROR на команду 3" in r.getMessage() for r in records))
+    node.fail_cmd = 36
+    f = await agent.request(bytes([36, 1, 2]))
+    node.fail_cmd = None
+    check("ERROR ноды агенту и в лог", f[0] == 1 and any("ERROR на команду 36" in r.getMessage() for r in records))
     agent2 = await RawClient.open(agent_port)
     check("второй агент вытесняет первого", await wait_for(agent.closed.is_set))
     check("приложение этим не затронуто", not app3.closed.is_set())
@@ -360,7 +363,71 @@ async def main() -> None:
     await agent2.close()
     await asyncio.sleep(0.1)
     summary = [r.getMessage() for r in records if "Агент, команд с начала" in r.getMessage()]
-    check("сводка команд агента при отключении", bool(summary) and "SEND_TRACE_PATH=2" in summary[-1], str(summary))
+    check("сводка команд агента при отключении", bool(summary) and "SEND_TRACE_PATH=3" in summary[-1], str(summary))
+    logging.getLogger("core.mcmux").removeHandler(capture)
+
+    print("11. Агент: строгий разбор кадров, белый список команд, ограничение частоты")
+    records.clear()
+    logging.getLogger("core.mcmux").addHandler(capture)
+    mcmux._AGENT_AIR_LIMIT = 3
+    mux._agent_air.clear()
+    mux._agent_last_advert = float("-inf")
+    reboot_before, sessions_before = node.count.get(19, 0), node.sessions
+
+    # а) Слишком длинный кадр, внутри которого лежит кадр REBOOT: без строгого разбора мультиплексор
+    # пропустил бы заголовок, нашёл вложенный маркер и выполнил бы REBOOT от имени агента.
+    agent = await RawClient.open(agent_port)
+    await agent.request(bytes([1, 3]) + b"      agent")
+    agent.writer.write(b"<" + (400).to_bytes(2, "little") + bytes(10) + b"<\x01\x00\x13" + bytes(386))
+    check("кадр длиннее допустимого — агент отключён", await wait_for(agent.closed.is_set))
+    await asyncio.sleep(0.1)
+    check("вложенный REBOOT не выполнен",
+          node.count.get(19, 0) == reboot_before and node.sessions == sessions_before and mux._ready)
+    check("в лог — причина отключения", any("недопустимая длина кадра 400" in r.getMessage() for r in records))
+
+    # б) Белый список
+    agent = await RawClient.open(agent_port)
+    await agent.request(bytes([1, 3]) + b"      agent")
+    for cmd, name in ((19, "REBOOT"), (23, "EXPORT_PRIVATE_KEY"), (3, "SEND_CHANNEL_TXT_MSG")):
+        f = await agent.request(bytes([cmd]) + b"x" * 8)
+        check(f"{name} агенту отказано", f == bytes([1, 1]), str(f))
+    check("нода запрещённых команд не получила", node.count.get(19, 0) == reboot_before and node.count.get(23, 0) == 0)
+
+    # в) Менять контакты можно только репитерам и полным кадром
+    def contact_cmd(kind: int) -> bytes:
+        return bytes([9]) + bytes(32) + bytes([kind, 0, 0]) + bytes(64) + bytes(32) + bytes(12)
+
+    check("контакт-companion менять нельзя", await agent.request(contact_cmd(1)) == bytes([1, 1]))
+    check("контакт-репитер менять можно", (await agent.request(contact_cmd(2)))[0] == 0)
+    check("неполный кадр контакта отклонён", await agent.request(contact_cmd(2)[:100]) == bytes([1, 1]))
+
+    # г) Подпись — только над префиксом агента и кодом сервера
+    good_sign = bytes([34]) + mcmux._PROOF_PREFIX + bytes(16)
+    check("подпись кода сервера с префиксом разрешена", (await agent.request(good_sign))[0] == 0)
+    check("подпись чужих данных запрещена", await agent.request(bytes([34]) + b"x" * 30) == bytes([1, 1]))
+    check("слишком длинные данные для подписи запрещены", await agent.request(good_sign + b"x") == bytes([1, 1]))
+
+    # д) Трассировка с путём длиннее MAX_PATH_SIZE
+    check("трассировка нормальной длины разрешена", (await agent.request(bytes([36, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10])))[0] == 0)
+    check("трассировка с длинным путём запрещена", await agent.request(bytes([36]) + bytes(100)) == bytes([1, 1]))
+
+    # е) flood-advert не чаще раза в N с
+    check("первый advert разрешён", (await agent.request(bytes([7, 1])))[0] == 0)
+    check("второй advert сразу — отказ", await agent.request(bytes([7, 1])) == bytes([1, 1]))
+
+    # ж) Не больше N эфирных команд за окно
+    mux._agent_air.clear()
+    status = bytes([27]) + bytes(32)
+    answers = [(await agent.request(status))[0] for _ in range(4)]
+    check("три эфирные команды пропущены, четвёртая — отказ", answers == [0, 0, 0, 1], str(answers))
+
+    await agent.close()
+    await asyncio.sleep(0.1)
+    denied_msgs = [r.getMessage() for r in records if "Агенту отказано" in r.getMessage()]
+    check("в логе по одной строке на причину, без потока",
+          sum("команда 19 (REBOOT)" in m for m in denied_msgs) == 1 and any("эфирных команд" in m for m in denied_msgs), str(denied_msgs))
+    check("сводка отказов при отключении", any("Агенту отказано (из них)" in m and "REBOOT=1" in m for m in denied_msgs),
+          str(denied_msgs[-2:]))
     logging.getLogger("core.mcmux").removeHandler(capture)
 
     await app3.close()
