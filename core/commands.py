@@ -7,6 +7,7 @@ from typing import Any, Callable, Coroutine
 
 import requests
 
+from .agentver import get_agent_version
 from .botver import BOT_VERSION, deployed_at
 from .currency import convert as convert_currency, get_rates
 from .doomsday import get_doomsday
@@ -235,6 +236,11 @@ async def _botver(ctx: Context) -> str | None:
     return f"🤖 Бот {BOT_VERSION} от {deployed_at():%d.%m.%Y}"
 
 
+async def _agentver(ctx: Context) -> str | None:
+    # Установленная версия агента Ommesh. Не в HELP_INFO — намеренно скрытая команда.
+    return await get_agent_version()
+
+
 async def _moon(ctx: Context) -> str | None:
     moon = ctx.config.get("moon", {})
     return await get_moon(
@@ -415,6 +421,7 @@ COMMANDS: dict[str, Callable[..., Coroutine]] = {
     "/version": _ver,
     "/versions": _ver,
     "/botver": _botver,
+    "/agentver": _agentver,
     "/moon": _moon,
     "/luna": _moon,
     "/mercury": _mercury,
