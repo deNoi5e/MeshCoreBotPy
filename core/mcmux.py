@@ -100,6 +100,7 @@ _DRAIN_LIMIT = 200           # не больше сообщений за оди�
 _SLOT_QUEUE_LIMIT = 200      # сообщений на слот, как у офлайн-очереди ноды
 _JOBS_LIMIT = 64             # команд в очереди; больше — клиенту ERROR
 _AGENT_REPORT_SECONDS = 1800  # как часто в лог идёт сводка команд агента
+_AGENT_MAIL_MAX_CHARS = 24    # длиннее агент личку серверу не отдаёт (вход на сайт по коду — короткое)
 _MAX_WRITE_BUFFER = 1 << 20  # клиент, не читающий больше 1 МБ, отключается
 _ERROR_FRAME = bytes([RESP_ERROR, 4])  # ERR_CODE_BAD_STATE
 _DENIED_FRAME = bytes([RESP_ERROR, 1])  # ERR_CODE_UNSUPPORTED_CMD: мультиплексор команду не пропустил
@@ -139,6 +140,21 @@ _AGENT_AIR_CMDS = frozenset({CMD_SEND_LOGIN, CMD_SEND_STATUS_REQ, CMD_SEND_TRACE
 _AGENT_AIR_LIMIT = 30              # не больше стольких за окно (опрос одного репитера — до ~9)
 _AGENT_AIR_WINDOW = 60.0           # окно, с
 _AGENT_ADVERT_MIN_SECONDS = 300.0  # flood-advert ноды — не чаще раза в 5 минут
+
+
+def _agent_mail(frame: bytes) -> bool:
+    """Личное сообщение, которое имеет смысл отдать агенту: короткий текст — возможный код входа на
+    сайт Ommesh (его шлют личкой на ноду с агентом). Остальное агенту не нужно: каналы он не читает,
+    длинное не отправляет серверу, а команды боту (`/ping`…) — чужая переписка, в облако им незачем.
+    Кадр — CONTACT_MSG_RECV (7: код, префикс 6, путь, тип, метка 4, текст) или V3 (16: то же
+    с тремя байтами SNR перед префиксом)."""
+    if not frame or frame[0] not in (7, 16):
+        return False
+    start = 16 if frame[0] == 16 else 13   # начало текста
+    if len(frame) <= start or frame[start - 5] != 0:   # тип текста: 0 — обычный
+        return False
+    text = frame[start:].decode("utf-8", errors="replace").strip()
+    return 0 < len(text) <= _AGENT_MAIL_MAX_CHARS and not text.startswith("/")
 
 
 def _frame(marker: bytes, payload: bytes) -> bytes:
@@ -300,9 +316,9 @@ class Mux:
         self._reconnect_delay = reconnect_delay
         self._clients: list[_Client] = []
         # Очереди сообщений живут дольше сессии с нодой: перезагрузка ноды не должна
-        # стирать то, что приложение ещё не забрало. Слота у агента нет: сообщений ему не отдаём
-        # (SYNC_NEXT_MESSAGE → «пусто», MESSAGES_WAITING не шлём) — ему нужен эфир, а не переписка.
-        self._slots: dict[str, deque] = {"bot": deque(), "app": deque()}
+        # стирать то, что приложение ещё не забрало. У агента слот особый: копится только короткая
+        # личка (_agent_mail — возможный код входа на сайт), и только пока агент подключён.
+        self._slots: dict[str, deque] = {"bot": deque(), "app": deque(), "agent": deque()}
         # Сколько сообщений слот вытеснил в текущем переполнении: в лог — одна строка
         # в начале и одна в конце, а не по строке на каждое сообщение.
         self._slot_lost: dict[str, int] = {}
@@ -571,9 +587,15 @@ class Mux:
         self._store_message(frame, only_slots=("app",))
 
     def _store_message(self, frame: bytes, only_slots: Optional[tuple] = None) -> None:
+        stored = set()   # слоты, куда кадр лёг: MESSAGES_WAITING шлём только их клиентам
         for slot, queue in self._slots.items():
             if only_slots is not None and slot not in only_slots:
                 continue
+            if slot == "agent":
+                if not _agent_mail(frame) or not any(c.slot == "agent" for c in self._clients):
+                    continue
+                logger.info(f"🛰 Агенту отдана короткая личка ({len(frame)} байт кадра) — "
+                            f"вдруг это код входа на сайт")
             if len(queue) >= _SLOT_QUEUE_LIMIT:
                 queue.popleft()
                 if slot not in self._slot_lost:
@@ -581,8 +603,9 @@ class Mux:
                                    f"самые старые сообщения вытесняются")
                 self._slot_lost[slot] = self._slot_lost.get(slot, 0) + 1
             queue.append(frame)
+            stored.add(slot)
         for client in self._clients:
-            if client.slot in self._slots and (only_slots is None or client.slot in only_slots):
+            if client.slot in stored:
                 client.send_frame(bytes([PUSH_MESSAGES_WAITING]))
 
     # ---- клиенты ----
@@ -623,6 +646,8 @@ class Mux:
                 self._clients.remove(client)
             logger.info(f"🔌 Клиент {peer} ({slot}) отключился")
             if slot == "agent":
+                # Не забранное агентом не оставляем: после его возврата чужая старая личка ушла бы на сервер.
+                self._slots["agent"].clear()
                 self._log_agent_summary()
 
     def _note_agent_command(self, payload: bytes) -> None:

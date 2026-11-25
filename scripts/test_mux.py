@@ -42,6 +42,11 @@ def msg_frame(text: str) -> bytes:
     return bytes([17, 40, 0, 0, 0, 1, 0]) + _u32(1700000000) + text.encode()
 
 
+def dm_frame(text: str, txt_type: int = 0) -> bytes:
+    # CONTACT_MSG_RECV_V3: code, snr, 2 reserved, префикс отправителя 6, path_len, txt_type, timestamp, text
+    return bytes([16, 40, 0, 0]) + b"\xaa\xbb\xcc\xdd\xee\xff" + bytes([0, txt_type]) + _u32(1700000000) + text.encode()
+
+
 def msg_text(frame: bytes) -> str:
     return frame[11:].decode()
 
@@ -176,6 +181,11 @@ async def pull_all(app: RawClient) -> list[str]:
         if frame[0] == 10:
             return texts
         texts.append(msg_text(frame))
+
+
+async def pull_all_dm(app: RawClient) -> None:
+    while (await app.request(bytes([10])))[0] != 10:
+        pass
 
 
 async def main() -> None:
@@ -328,8 +338,9 @@ async def main() -> None:
 
     print("10. Агент на своём порту: слот по порту, без сообщений, команды в логе")
     records.clear()
+    mcmux._SLOT_QUEUE_LIMIT = 200   # шаг 9 ставил 3
     logging.getLogger("core.mcmux").addHandler(capture)
-    agent_port = mux.agent_server.sockets[0].getsockname()[1]
+    agent_port =mux.agent_server.sockets[0].getsockname()[1]
     slot[0] = "bot"  # адрес агента (loopback) не должен определять слот: слот задаёт порт
     agent = await RawClient.open(agent_port)
     f = await agent.request(bytes([1, 3]) + b"      agent")
@@ -344,6 +355,25 @@ async def main() -> None:
     check("агент не получил MESSAGES_WAITING", not any(p[0] == 0x83 for p in agent.pushes))
     check("агенту сообщений нет", (await agent.request(bytes([10])))[0] == 10)
     check("приложение сообщение получило", await pull_all(app3) == ["ag1"])
+
+    # Личка: вход на сайт Ommesh — код, присланный личным сообщением на ноду с агентом. Агент забирает
+    # почту сам (SYNC_NEXT_MESSAGE), поэтому короткая личка копируется ему, не отнимаясь у бота и приложения.
+    pushes_before = sum(1 for p in agent.pushes if p[0] == 0x83)
+    for text, kind in (("/ping", 0), ("x" * 30, 0), ("a1B2c3", 2), ("a1B2c3", 0)):
+        node.queue.append(dm_frame(text, kind))
+    node.up.emit(bytes([0x83]))
+    check("агент получил MESSAGES_WAITING на короткую личку",
+          await wait_for(lambda: sum(1 for p in agent.pushes if p[0] == 0x83) > pushes_before))
+    got = []
+    while (f := await agent.request(bytes([10])))[0] != 10:
+        got.append(f[16:].decode())
+    check("агенту — только короткая личка без команды, не длинная и не от комнаты", got == ["a1B2c3"], str(got))
+    got_app = []
+    while (f := await app3.request(bytes([10])))[0] != 10:
+        got_app.append(f[16:].decode())
+    check("приложение получило все четыре лички", got_app == ["/ping", "x" * 30, "a1B2c3", "a1B2c3"], str(got_app))
+    check("личку агент не вынул у бота: нода опустошена мультиплексором", len(node.queue) == 0)
+
     node.up.emit(bytes([0x88, 7]))
     check("push ноды дошёл до агента", await wait_for(lambda: any(p[0] == 0x88 for p in agent.pushes)))
     f = await agent.request(bytes([36, 1, 2]))
@@ -362,6 +392,12 @@ async def main() -> None:
     await agent2.request(bytes([1, 3]) + b"      agent")
     await agent2.close()
     await asyncio.sleep(0.1)
+    node.queue.append(dm_frame("a1B2c3"))
+    node.up.emit(bytes([0x83]))
+    await wait_for(lambda: len(node.queue) == 0)
+    await asyncio.sleep(0.2)
+    check("пока агента нет, его слот лички не копит", len(mux._slots["agent"]) == 0)
+    await pull_all_dm(app3)
     summary = [r.getMessage() for r in records if "Агент, команд с начала" in r.getMessage()]
     check("сводка команд агента при отключении", bool(summary) and "SEND_TRACE_PATH=3" in summary[-1], str(summary))
     logging.getLogger("core.mcmux").removeHandler(capture)
