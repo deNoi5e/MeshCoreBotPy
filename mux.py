@@ -36,10 +36,17 @@ def main() -> None:
     host = os.environ.get("MUX_HOST", "127.0.0.1")
     port = int(os.environ.get("MUX_PORT", "5000"))
     delay = float(os.environ.get("RECONNECT_DELAY_SECONDS", "15"))
+    # Отдельный порт для агента ommesh (его запускают с --radio 127.0.0.1:<порт>). Не задан — выключен.
+    agent_port_raw = os.environ.get("MUX_AGENT_PORT", "").strip()
+    agent_port = int(agent_port_raw) if agent_port_raw else None
+    agent_host = os.environ.get("MUX_AGENT_HOST", "127.0.0.1")
     logger.info(f"🚀 Мультиплексор: нода {serial_port} → TCP {host}:{port}")
     if host not in ("127.0.0.1", "::1", "localhost"):
         logger.warning("⚠️  Мультиплексор открыт в сеть без авторизации: любой, кто доберётся до порта, управляет нодой")
-    mux = Mux(lambda: SerialUpstream(serial_port), host, port, reconnect_delay=delay)
+    if agent_port is not None and agent_host not in ("127.0.0.1", "::1", "localhost"):
+        logger.warning("⚠️  Порт агента открыт в сеть без авторизации: любой, кто доберётся до него, управляет нодой")
+    mux = Mux(lambda: SerialUpstream(serial_port), host, port, reconnect_delay=delay,
+              agent_host=agent_host, agent_port=agent_port)
     try:
         asyncio.run(mux.run())
     except KeyboardInterrupt:

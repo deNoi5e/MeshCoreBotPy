@@ -177,7 +177,7 @@ async def pull_all(app: RawClient) -> list[str]:
 
 async def main() -> None:
     node = FakeNode()
-    mux = Mux(node.make_upstream, "127.0.0.1", 0, reconnect_delay=0.3)
+    mux = Mux(node.make_upstream, "127.0.0.1", 0, reconnect_delay=0.3, agent_port=0)
     slot = ["bot"]
     mux.slot_for = lambda host: slot[0]
     mux_task = asyncio.create_task(mux.run())
@@ -321,6 +321,46 @@ async def main() -> None:
     summary = [r for r in records if "Слот app" in r.getMessage() and "вытеснено" in r.getMessage()]
     check("итог одной строкой с числом потерянных", len(summary) == 1 and summary[0].getMessage().endswith(": 3"),
           str([r.getMessage() for r in summary]))
+    logging.getLogger("core.mcmux").removeHandler(capture)
+
+    print("10. Агент на своём порту: слот по порту, без сообщений, команды в логе")
+    records.clear()
+    logging.getLogger("core.mcmux").addHandler(capture)
+    agent_port = mux.agent_server.sockets[0].getsockname()[1]
+    slot[0] = "bot"  # адрес агента (loopback) не должен определять слот: слот задаёт порт
+    agent = await RawClient.open(agent_port)
+    f = await agent.request(bytes([1, 3]) + b"      agent")
+    check("агент: APP_START отвечен SELF_INFO", f[0] == 5)
+    check("агент подключился в слот agent",
+          any("слот agent" in r.getMessage() for r in records), str([r.getMessage() for r in records][-3:]))
+    r = await bot2.commands.send_device_query()
+    check("бот (loopback, основной порт) не вытеснен агентом", r.type == EventType.DEVICE_INFO, str(r))
+    node.inject("ag1")
+    await wait_for(lambda: len(node.queue) == 0)
+    await asyncio.sleep(0.2)
+    check("агент не получил MESSAGES_WAITING", not any(p[0] == 0x83 for p in agent.pushes))
+    check("агенту сообщений нет", (await agent.request(bytes([10])))[0] == 10)
+    check("приложение сообщение получило", await pull_all(app3) == ["ag1"])
+    node.up.emit(bytes([0x88, 7]))
+    check("push ноды дошёл до агента", await wait_for(lambda: any(p[0] == 0x88 for p in agent.pushes)))
+    f = await agent.request(bytes([36, 1, 2]))
+    check("команда агента отвечена нодой", f[0] == 0, str(f))
+    await agent.request(bytes([36, 1, 2]))
+    first = [r.getMessage() for r in records if "Агент: первая команда 36" in r.getMessage()]
+    check("первая команда агента в логе ровно один раз, с именем", len(first) == 1 and "SEND_TRACE_PATH" in first[0],
+          str(first))
+    node.fail_chan = True
+    f = await agent.request(bytes([3, 0, 0]) + _u32(1700000002) + b"agent text")
+    node.fail_chan = False
+    check("ERROR ноды агенту и в лог", f[0] == 1 and any("ERROR на команду 3" in r.getMessage() for r in records))
+    agent2 = await RawClient.open(agent_port)
+    check("второй агент вытесняет первого", await wait_for(agent.closed.is_set))
+    check("приложение этим не затронуто", not app3.closed.is_set())
+    await agent2.request(bytes([1, 3]) + b"      agent")
+    await agent2.close()
+    await asyncio.sleep(0.1)
+    summary = [r.getMessage() for r in records if "Агент, команд с начала" in r.getMessage()]
+    check("сводка команд агента при отключении", bool(summary) and "SEND_TRACE_PATH=2" in summary[-1], str(summary))
     logging.getLogger("core.mcmux").removeHandler(capture)
 
     await app3.close()

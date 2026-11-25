@@ -16,6 +16,9 @@
   копиями по «слотам» клиентов: loopback-подключения — слот `bot`, остальные — `app`.
   Слот хранит сообщения и пока клиента нет (как офлайн-очередь ноды), поэтому
   приложение, подключившееся утром, получит накопленное за ночь.
+- Агент ommesh подключается на отдельный порт (agent_port): слот `agent` определяется
+  портом, а не адресом. Сообщений он не получает (только push-кадры и ответы на свои
+  команды), а его команды пишутся в лог — чтобы по ним решить, что агенту разрешать.
 - DEVICE_QUERY мультиплексор отвечает сам из кэша, а ноду держит на протоколе v3
   (сообщения в формате *_V3, с SNR): версию в ноде хранит одно значение, и клиент
   с другой версией иначе переключил бы формат кадров всем.
@@ -31,8 +34,12 @@ from collections import deque
 from typing import Awaitable, Callable, Optional, Protocol
 
 from meshcore import SerialConnection
+from meshcore.packets import CommandType
 
 logger = logging.getLogger(__name__)
+
+# Имена команд для лога команд агента (код → имя)
+_CMD_NAMES = {c.value: c.name for c in CommandType}
 
 # Команды (CommandType в meshcore/packets.py)
 CMD_APP_START = 1
@@ -75,6 +82,7 @@ _DRAIN_POLL_SECONDS = 10.0   # страховка на случай потеря
 _DRAIN_LIMIT = 200           # не больше сообщений за один проход (защита от зацикливания)
 _SLOT_QUEUE_LIMIT = 200      # сообщений на слот, как у офлайн-очереди ноды
 _JOBS_LIMIT = 64             # команд в очереди; больше — клиенту ERROR
+_AGENT_REPORT_SECONDS = 1800  # как часто в лог идёт сводка команд агента
 _MAX_WRITE_BUFFER = 1 << 20  # клиент, не читающий больше 1 МБ, отключается
 _ERROR_FRAME = bytes([RESP_ERROR, 4])  # ERR_CODE_BAD_STATE
 
@@ -204,14 +212,22 @@ class _Client:
 
 class Mux:
     def __init__(self, upstream_factory: Callable[[], Upstream], host: str, port: int,
-                 reconnect_delay: float = 15.0):
+                 reconnect_delay: float = 15.0, agent_host: str = "127.0.0.1",
+                 agent_port: Optional[int] = None):
         self._upstream_factory = upstream_factory
         self._host = host
         self._port = port
+        # Отдельный порт для агента ommesh (None — выключен). Слот агента определяется портом,
+        # а не адресом: на одной машине с ботом он тоже приходит с loopback.
+        self._agent_host = agent_host
+        self._agent_port = agent_port
+        self.agent_server: Optional[asyncio.AbstractServer] = None
+        self._agent_cmds: dict[int, int] = {}
         self._reconnect_delay = reconnect_delay
         self._clients: list[_Client] = []
         # Очереди сообщений живут дольше сессии с нодой: перезагрузка ноды не должна
-        # стирать то, что приложение ещё не забрало.
+        # стирать то, что приложение ещё не забрало. Слота у агента нет: сообщений ему не отдаём
+        # (SYNC_NEXT_MESSAGE → «пусто», MESSAGES_WAITING не шлём) — ему нужен эфир, а не переписка.
         self._slots: dict[str, deque] = {"bot": deque(), "app": deque()}
         # Сколько сообщений слот вытеснил в текущем переполнении: в лог — одна строка
         # в начале и одна в конце, а не по строке на каждое сообщение.
@@ -233,6 +249,13 @@ class Mux:
         self.server = await asyncio.start_server(self._on_connect, self._host, self._port)
         addrs = ", ".join(str(s.getsockname()) for s in self.server.sockets)
         logger.info(f"🔀 Мультиплексор слушает {addrs}")
+        report_task = None
+        if self._agent_port is not None:
+            self.agent_server = await asyncio.start_server(
+                lambda r, w: self._on_connect(r, w, "agent"), self._agent_host, self._agent_port)
+            addrs = ", ".join(str(s.getsockname()) for s in self.agent_server.sockets)
+            logger.info(f"🛰 Порт агента слушает {addrs}")
+            report_task = asyncio.create_task(self._agent_report_loop())
         try:
             while True:
                 try:
@@ -245,6 +268,10 @@ class Mux:
                 await asyncio.sleep(self._reconnect_delay)
         finally:
             self.server.close()
+            if self.agent_server is not None:
+                self.agent_server.close()
+            if report_task is not None:
+                report_task.cancel()
 
     async def _session(self) -> None:
         upstream = self._upstream_factory()
@@ -365,10 +392,10 @@ class Mux:
             self._finish_job(job, ok=True)
             return
         if client is not None and cmd == CMD_SYNC_NEXT_MESSAGE:
-            queue = self._slots[client.slot]
+            queue = self._slots.get(client.slot)  # у агента слота нет — всегда «пусто»
             client.send_frame(queue.popleft() if queue else bytes([RESP_NO_MORE_MSGS]))
             lost = self._slot_lost.get(client.slot)
-            if lost and len(queue) < _SLOT_QUEUE_LIMIT:
+            if lost and queue is not None and len(queue) < _SLOT_QUEUE_LIMIT:
                 del self._slot_lost[client.slot]
                 logger.info(f"📭 Слот {client.slot}: за время переполнения вытеснено сообщений: {lost}")
             self._finish_job(job, ok=True)
@@ -404,6 +431,9 @@ class Mux:
                 job.frames.append(frame)
                 if frame[0] == RESP_SELF_INFO and len(frame) > _SELF_INFO_NAME_OFFSET:
                     self._node_name = frame[_SELF_INFO_NAME_OFFSET:].rstrip(b"\0")
+                if frame[0] == RESP_ERROR and job.client is not None and job.client.slot == "agent":
+                    logger.info(f"🛰 Агент: нода ответила ERROR на команду {cmd} "
+                                f"({_CMD_NAMES.get(cmd, '?')}), ответ {frame.hex()}")
                 if job.client is not None:
                     job.client.send_frame(frame)
                 # Список контактов — START, N × CONTACT, END; остальные команды отвечают одним кадром.
@@ -478,7 +508,7 @@ class Mux:
                 self._slot_lost[slot] = self._slot_lost.get(slot, 0) + 1
             queue.append(frame)
         for client in self._clients:
-            if only_slots is None or client.slot in only_slots:
+            if client.slot in self._slots and (only_slots is None or client.slot in only_slots):
                 client.send_frame(bytes([PUSH_MESSAGES_WAITING]))
 
     # ---- клиенты ----
@@ -487,14 +517,17 @@ class Mux:
         """Слот клиента по адресу: бот ходит с этой же машины, всё остальное — приложение."""
         return "bot" if host in ("127.0.0.1", "::1") else "app"
 
-    async def _on_connect(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    async def _on_connect(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
+                          slot: Optional[str] = None) -> None:
+        """slot задан у порта агента; у основного порта слот определяется по адресу клиента."""
         peer_addr = writer.get_extra_info("peername") or ("?", 0)
         peer = f"{peer_addr[0]}:{peer_addr[1]}"
         if not self._ready:
             logger.info(f"🔌 Клиент {peer} отклонён: нода не готова")
             writer.close()
             return
-        slot = self.slot_for(peer_addr[0])
+        if slot is None:
+            slot = self.slot_for(peer_addr[0])
         sock = writer.get_extra_info("socket")
         if sock is not None:
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -507,16 +540,43 @@ class Mux:
             old.close()
             self._clients.remove(old)
         self._clients.append(client)
-        logger.info(f"🔌 Клиент {peer} подключился (слот {slot}, в очереди {len(self._slots[slot])} сообщ.)")
+        queued = f", в очереди {len(self._slots[slot])} сообщ." if slot in self._slots else ""
+        logger.info(f"🔌 Клиент {peer} подключился (слот {slot}{queued})")
         try:
             await client.serve()
         finally:
             if client in self._clients:
                 self._clients.remove(client)
             logger.info(f"🔌 Клиент {peer} ({slot}) отключился")
+            if slot == "agent":
+                self._log_agent_summary()
+
+    def _note_agent_command(self, payload: bytes) -> None:
+        """Агент ommesh — чёрный ящик: какие команды он шлёт, заранее неизвестно. Первую команду
+        каждого кода пишем в лог с началом кадра, остальные считаем — по сводке потом решим,
+        что ему разрешать (белый список), а что закрыть."""
+        cmd = payload[0]
+        count = self._agent_cmds[cmd] = self._agent_cmds.get(cmd, 0) + 1
+        if count == 1:
+            tail = "…" if len(payload) > 24 else ""
+            logger.info(f"🛰 Агент: первая команда {cmd} ({_CMD_NAMES.get(cmd, '?')}), "
+                        f"{len(payload)} байт: {payload[:24].hex()}{tail}")
+
+    def _log_agent_summary(self) -> None:
+        if not self._agent_cmds:
+            return
+        parts = ", ".join(f"{_CMD_NAMES.get(c, c)}={n}" for c, n in sorted(self._agent_cmds.items()))
+        logger.info(f"🛰 Агент, команд с начала работы мультиплексора: {parts}")
+
+    async def _agent_report_loop(self) -> None:
+        while True:
+            await asyncio.sleep(_AGENT_REPORT_SECONDS)
+            self._log_agent_summary()
 
     def on_client_frame(self, client: _Client, payload: bytes) -> None:
         cmd = payload[0]
+        if client.slot == "agent":
+            self._note_agent_command(payload)
         if cmd in (CMD_APP_START, CMD_DEVICE_QUERY) and len(payload) > 1:
             logger.info(f"📱 {client.peer}: команда {cmd}, версия протокола клиента {payload[1]}")
         if self._jobs is None or self._jobs.qsize() >= _JOBS_LIMIT:
